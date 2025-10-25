@@ -48,4 +48,10 @@ module.exports = {
     limit: Joi.number().min(1).default(10),
     sort: Joi.string().valid('dateTime', 'date_desc').default('dateTime')
   }).with('lat', 'lng')
+
+  ,
+  // Param schemas
+  idParamSchema: Joi.object({
+    id: Joi.string().hex().length(24).required()
+  })
 }

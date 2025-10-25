@@ -6,8 +6,8 @@ const { bookRideSchema } = require('../utils/validators')
 
 const router = express.Router()
 
-router.post('/:id/book', authMiddleware, validateMiddleware(bookRideSchema), bookRide)
+router.post('/:id/book', validateMiddleware(require('../utils/validators').idParamSchema, { source: 'params' }), authMiddleware, validateMiddleware(bookRideSchema), bookRide)
 router.get('/', authMiddleware, listBookings)
-router.put('/:id/cancel', authMiddleware, cancelBooking)
+router.put('/:id/cancel', validateMiddleware(require('../utils/validators').idParamSchema, { source: 'params' }), authMiddleware, cancelBooking)
 
 module.exports = router

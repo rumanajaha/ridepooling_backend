@@ -7,7 +7,7 @@ const { updateProfileSchema, changePasswordSchema } = require('../utils/validato
 
 const router = express.Router()
 
-router.get('/:id', getUser)
+router.get('/:id', validateMiddleware(require('../utils/validators').idParamSchema, { source: 'params' }), getUser)
 router.put('/me', authMiddleware, validateMiddleware(updateProfileSchema), updateProfile)
 router.put('/me/password', authMiddleware, validateMiddleware(changePasswordSchema), changePassword)
 
