@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import Ride from '../models/rideModel.js';
 import User from '../models/userModel.js';
 
@@ -306,7 +307,7 @@ export const searchRides = async (req, res) => {
       maxPrice,
     } = req.query;
 
-    const filter = { rideStatus: 'active', 'seatsBooked': { $lt: mongoose.Types.ObjectId } };
+    const filter = { rideStatus: 'active' };
 
     if (startCity) {
       filter['startLocation.address'] = new RegExp(startCity, 'i');
@@ -324,9 +325,14 @@ export const searchRides = async (req, res) => {
       filter.departureTime = { $gte: startDate, $lte: endDate };
     }
 
-    if (minSeats) {
-      filter.$expr = { $gte: ['$availableSeats', parseInt(minSeats)] };
-    }
+    // Seats left = availableSeats - seatsBooked
+    const seatsExpression = {
+      $gte: [
+        { $subtract: ['$availableSeats', '$seatsBooked'] },
+        parseInt(minSeats || 1),
+      ],
+    };
+    filter.$expr = seatsExpression;
 
     if (maxPrice) {
       filter.pricePerSeat = { $lte: parseInt(maxPrice) };
