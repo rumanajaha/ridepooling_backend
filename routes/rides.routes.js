@@ -1,7 +1,7 @@
 
 
 const express = require('express')
-const { createRide, listRides, searchRides, getRide, updateRide, deleteRide, closeRide,myRides } = require('../controllers/rides.controller')
+const { createRide, listRides, searchRides, getRide, updateRide, deleteRide, closeRide,myRides,updateRideStatus } = require('../controllers/rides.controller')
 const authMiddleware = require('../middleware/auth.middleware')
 const ownershipMiddleware = require('../middleware/ownership.middleware')
 const validateMiddleware = require('../middleware/validate.middleware')
@@ -17,6 +17,6 @@ router.get('/:id', getRide)
 router.put('/:id', authMiddleware, ownershipMiddleware, validateMiddleware(createRideSchema), updateRide)
 router.delete('/:id', authMiddleware, ownershipMiddleware, deleteRide)
 router.post('/:id/close', authMiddleware, ownershipMiddleware, closeRide)
-
+router.patch('/:id/status',authMiddleware, ownershipMiddleware, updateRideStatus)
 
 module.exports = router
