@@ -53,7 +53,7 @@ const searchRides = async (req, res, next) => {
   try {
     const { lat, lng, maxDistanceKm = 5, date, minSeats, page = 1, limit = 10, sort = 'dateTime' } = req.query
     if (!lat || !lng) {
-      throw Object.assign(new Error('Latitude and longitude are required'), { status: 400, code: 'MISSING_FIELDS' })
+      return res.status(400).json({ error: 'Latitude and longitude are required for search' })
     }
     const maxDistanceMeters = parseFloat(maxDistanceKm) * 1000
     const query = {
@@ -94,8 +94,8 @@ const getRide = async (req, res, next) => {
 const updateRide = async (req, res, next) => {
   try {
     const ride = await Ride.findById(req.params.id)
-    if (!ride) throw Object.assign(new Error('Ride not found'), { status: 404, code: 'NOT_FOUND' })
-    if (ride.status !== 'open') throw Object.assign(new Error('Cannot update non-open ride'), { status: 403, code: 'INVALID_STATUS' })
+    if (!ride) return res.status(404).json({ error: 'Ride not found' })
+    if (ride.status !== 'open') return res.status(400).json({ error: 'Only open rides can be updated' })
 
     const updates = { ...req.body }
     if (updates.origin && (!ride.originCoords || updates.origin !== ride.origin)) {
@@ -128,23 +128,48 @@ const deleteRide = async (req, res, next) => {
 const closeRide = async (req, res, next) => {
   try {
     const ride = await Ride.findByIdAndUpdate(req.params.id, { status: 'completed' }, { new: true })
-    if (!ride) throw Object.assign(new Error('Ride not found'), { status: 404, code: 'NOT_FOUND' })
+    if (!ride) return res.status(404).json({ error: 'Ride not found' })
     res.json({ success: true, data: ride })
   } catch (error) {
     next(error)
   }
 }
 
-const myRides = async(req,res,next)=>{
-  try{
-    const rides = await Ride.find({driverId: req.user.id}).sort({ createdAt: -1 }).lean()
+const myRides = async (req, res, next) => {
+  try {
+    const rides = await Ride.find({ driverId: req.user.id }).sort({ createdAt: -1 }).lean()
 
     res.json({ success: true, data: rides })
-  }catch(error){
+  } catch (error) {
     next(error)
   }
 
 }
-module.exports = { createRide, listRides, searchRides, getRide, updateRide, deleteRide, closeRide,myRides }
+const updateRideStatus = async (req, res, next) => {
+  try {
+    const { status } = req.body
+    const rideId = req.params.id
+    const ride = await Ride.findById(rideId)
+    if (!ride) {
+      return res.status(404).json({ error: 'Ride not found' })
+    }
+    if (ride.status !== "open") {
+      return res.status(403).json({ error: "Ride is not open" })
+    }
+    const statusOptions = ['open', 'completed', 'cancelled']
+    if (!statusOptions.includes(status)) {
+      return res.status(400).json({ error: 'Error' })
+    }
+    ride.status = status
+    await ride.save()
+    res.json({ success: true, data: ride })
+
+
+  } catch (error) {
+    next(error)
+  }
+}
+
+module.exports = { createRide, listRides, searchRides, getRide, updateRide, deleteRide, closeRide, myRides, updateRideStatus }
 
 
