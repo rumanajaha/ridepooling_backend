@@ -11,7 +11,7 @@ const router = express.Router()
 
 router.post('/', authMiddleware, validateMiddleware(createRideSchema), createRide)
 router.get('/', listRides)
-router.get('/search', validateMiddleware(searchRidesSchema), searchRides)
+router.get('/search',authMiddleware, validateMiddleware(searchRidesSchema), searchRides)
 router.get('/my', authMiddleware,myRides)
 router.get('/:id/details',authMiddleware, rideDetails) 
 router.get('/:id', getRide)

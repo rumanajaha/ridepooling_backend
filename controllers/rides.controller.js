@@ -51,6 +51,7 @@ const listRides = async (req, res, next) => {
 
 const searchRides = async (req, res, next) => {
   try {
+   
     const { lat, lng, maxDistanceKm = 5, date, minSeats, page = 1, limit = 10, sort = 'dateTime' } = req.query
     if (!lat || !lng) {
       return res.status(400).json({ error: 'Latitude and longitude are required for search' })
@@ -64,7 +65,8 @@ const searchRides = async (req, res, next) => {
       },
       seatsAvailable: { $gt: 0 },
       status: 'open',
-      dateTime: date ? { $gte: new Date(date) } : { $gte: new Date() }
+      dateTime: date ? { $gte: new Date(date) } : { $gte: new Date() },
+      driverId :{$ne : req.user.id}
     }
     if (minSeats) query.seatsAvailable = { $gte: parseInt(minSeats) }
     const total = await Ride.countDocuments(query)
