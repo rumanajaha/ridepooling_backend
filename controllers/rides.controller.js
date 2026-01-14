@@ -135,4 +135,16 @@ const closeRide = async (req, res, next) => {
   }
 }
 
-module.exports = { createRide, listRides, searchRides, getRide, updateRide, deleteRide, closeRide }
+const myRides = async(req,res,next)=>{
+  try{
+    const rides = await Ride.find({driverId: req.user.id}).sort({ createdAt: -1 }).lean()
+
+    res.json({ success: true, data: rides })
+  }catch(error){
+    next(error)
+  }
+
+}
+module.exports = { createRide, listRides, searchRides, getRide, updateRide, deleteRide, closeRide,myRides }
+
+
