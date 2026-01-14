@@ -57,8 +57,8 @@ const cancelBooking = async (req, res, next) => {
   try {
     session.startTransaction()
     const booking = await Booking.findById(req.params.id).session(session)
-    if (!booking) throw Object.assign(new Error('Booking not found'), { status: 404, code: 'NOT_FOUND' })
-    if (booking.passengerId.toString() !== req.user.id) throw Object.assign(new Error('Not authorized'), { status: 403, code: 'FORBIDDEN' })
+    if (!booking) return res.status(404).json({ success: false, error: { message: 'Booking not found' } })
+    if (booking.passengerId.toString() !== req.user.id) return res.status(403).json({ success: false, error: { message: 'Not authorized to cancel this booking' } })
 
     booking.status = 'cancelled'
     booking.cancelledAt = new Date()

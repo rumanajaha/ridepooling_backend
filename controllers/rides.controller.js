@@ -84,7 +84,7 @@ const searchRides = async (req, res, next) => {
 const getRide = async (req, res, next) => {
   try {
     const ride = await Ride.findById(req.params.id).populate('driverId', 'name rating avatarUrl vehicle').lean()
-    if (!ride) throw Object.assign(new Error('Ride not found'), { status: 404, code: 'NOT_FOUND' })
+    if (!ride) return res.status(404).json({ error: 'Ride not found' })
     res.json({ success: true, data: ride })
   } catch (error) {
     next(error)
@@ -115,7 +115,7 @@ const updateRide = async (req, res, next) => {
 const deleteRide = async (req, res, next) => {
   try {
     const bookings = await Booking.countDocuments({ rideId: req.params.id, status: { $ne: 'cancelled' } })
-    if (bookings > 0) throw Object.assign(new Error('Cannot delete ride with active bookings'), { status: 403, code: 'ACTIVE_BOOKINGS' })
+    if (bookings > 0) return res.status(400).json({ error: 'Cannot delete ride with active bookings' })
 
     await Ride.findByIdAndDelete(req.params.id)
     logger.info(`Ride deleted: ${req.params.id}`)
@@ -145,31 +145,46 @@ const myRides = async (req, res, next) => {
   }
 
 }
-const updateRideStatus = async (req, res, next) => {
-  try {
-    const { status } = req.body
-    const rideId = req.params.id
-    const ride = await Ride.findById(rideId)
-    if (!ride) {
-      return res.status(404).json({ error: 'Ride not found' })
-    }
-    if (ride.status !== "open") {
-      return res.status(403).json({ error: "Ride is not open" })
-    }
-    const statusOptions = ['open', 'completed', 'cancelled']
-    if (!statusOptions.includes(status)) {
-      return res.status(400).json({ error: 'Error' })
-    }
-    ride.status = status
-    await ride.save()
-    res.json({ success: true, data: ride })
+// const updateRideStatus = async (req, res, next) => {
+//   try {
+//     const { status } = req.body
+//     const rideId = req.params.id
+//     const ride = await Ride.findById(rideId)
+//     if (!ride) {
+//       return res.status(404).json({ error: 'Ride not found' })
+//     }
+//     if (ride.status !== "open") {
+//       return res.status(403).json({ error: "Ride is not open" })
+//     }
+//     const statusOptions = ['open', 'completed', 'cancelled']
+//     if (!statusOptions.includes(status)) {
+//       return res.status(400).json({ error: 'Error' })
+//     }
+//     ride.status = status
+//     await ride.save()
+//     res.json({ success: true, data: ride })
 
 
-  } catch (error) {
-    next(error)
+//   } catch (error) {
+//     next(error)
+//   }
+// }
+const rideDetails = async(req,res)=>{
+  try{
+     const rideId = req.params.id
+     const ride = await Ride.findById(rideId)
+     if(!ride){
+      return res.status(404).json({error:'Ride not found'})
+     }
+     if(ride.driverId.toString()!== req.user.id){
+      return res.status(403).json({error:'Not authorized to view this ride'})
+     }
+     const booking = await Booking.find({rideId:rideId,status:{$ne:'cancelled'}}).populate('passengerId','name email')
+      return res.json({success:true,data:{ride,booking}})
+  }catch(error){
+    return res.status(500).json({error:'Internal server error'})
   }
 }
-
-module.exports = { createRide, listRides, searchRides, getRide, updateRide, deleteRide, closeRide, myRides, updateRideStatus }
+module.exports = { createRide, listRides, searchRides, getRide, updateRide, deleteRide, closeRide, myRides,rideDetails }
 
 
