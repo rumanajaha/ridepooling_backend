@@ -1,5 +1,5 @@
 import express from 'express';
-import { bookRide, getMyBookings, cancelBooking, markCompletedByDriver, markCompletedByPassenger } from '../controllers/bookingController.js';
+import { bookRide, getMyBookings, getMyBookingsAsDriver, cancelBooking, markCompletedByDriver, markCompletedByPassenger } from '../controllers/bookingController.js';
 import authMiddleware from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -9,6 +9,8 @@ router.post('/:id/book', authMiddleware, bookRide);
 
 // Get current user's bookings
 router.get('/me', authMiddleware, getMyBookings);
+// Get bookings for current user as driver (their offered rides with passengers)
+router.get('/driver', authMiddleware, getMyBookingsAsDriver);
 
 // Cancel a booking
 router.delete('/:id', authMiddleware, cancelBooking);

@@ -5,6 +5,7 @@ import { calculateDistance, calculateETA, calculateBearing } from '../utils/have
 import Ride from '../models/rideModel.js';
 
 const connectedUsers = new Map(); // socketId -> { userId, rideId, role }
+let ioInstance = null; // Store global io instance for external use
 
 /**
  * Initialize Socket.IO with authentication
@@ -19,6 +20,8 @@ export function initializeSocket(server) {
     pingTimeout: 60000,
     pingInterval: 25000
   });
+
+  ioInstance = io; // Store io instance globally
 
   // Authentication middleware
   io.use(async (socket, next) => {
@@ -253,4 +256,11 @@ export function initializeSocket(server) {
 
   console.log('🚀 Socket.IO initialized for live tracking');
   return io;
+}
+
+/**
+ * Get the Socket.IO instance for emitting events from controllers
+ */
+export function getIO() {
+  return ioInstance;
 }

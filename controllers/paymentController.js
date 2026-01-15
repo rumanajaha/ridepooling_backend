@@ -1,5 +1,7 @@
 import Payment from '../models/paymentModel.js';
 import Ride from '../models/rideModel.js';
+import User from '../models/userModel.js';
+import { getIO } from '../socket/socketHandler.js';
 
 export const createPayment = async (req, res) => {
   try {
@@ -85,7 +87,7 @@ export const confirmPayment = async (req, res) => {
     }
 
     // Simulate payment gateway verification
-    // In production, verify with actual payment gateway (Razorpay UPI, etc)
+    // In production, verify with actual payment gateway (Razorpay UPI webhook + signature)
     if (!transactionId.startsWith('TXN_')) {
       return res.status(400).json({ message: 'Invalid transaction ID' });
     }
@@ -106,12 +108,95 @@ export const confirmPayment = async (req, res) => {
     if (passengerIndex !== -1) {
       ride.passengers[passengerIndex].paymentStatus = 'paid';
       ride.passengers[passengerIndex].paymentAmount = payment.amount;
-      await ride.save();
+    }
+
+    // Credit driver's wallet (platform-collected escrow credit)
+    try {
+      const Wallet = (await import('../models/walletModel.js')).default;
+      const driverId = payment.driver.toString();
+      const driverWallet = await Wallet.createWallet(driverId);
+      await driverWallet.addCredit(
+        payment.amount,
+        'Ride earnings (UPI, platform-collected)',
+        ride._id,
+        passengerId
+      );
+    } catch (walletErr) {
+      // Wallet errors should not block payment confirmation response
+      console.error('Wallet credit error:', walletErr?.message || walletErr);
+    }
+
+    // Always increment driver's earnings per passenger payment
+    try {
+      await User.findByIdAndUpdate(
+        ride.driver,
+        { $inc: { totalEarnings: payment.amount } },
+        { new: true }
+      );
+    } catch (userErr) {
+      console.error('Driver earnings update error:', userErr?.message || userErr);
+    }
+
+    // Increment passenger's completed rides count
+    try {
+      await User.findByIdAndUpdate(
+        passengerId,
+        { $inc: { completedRides: 1 } },
+        { new: true }
+      );
+    } catch (userErr) {
+      console.error('Passenger stats update error:', userErr?.message || userErr);
+    }
+
+    // If all passengers have paid, mark ride as completed and increment driver's ride count once
+    const allPaid = ride.passengers.every((p) => p.paymentStatus === 'paid');
+    if (allPaid && ride.rideStatus !== 'completed') {
+      ride.rideStatus = 'completed';
+      try {
+        await User.findByIdAndUpdate(
+          ride.driver,
+          { $inc: { completedRides: 1 } },
+          { new: true }
+        );
+      } catch (userErr) {
+        console.error('Driver completed rides update error:', userErr?.message || userErr);
+      }
+    }
+
+    await ride.save();
+
+    // Emit payment-completed event to driver via Socket.IO
+    try {
+      const io = getIO();
+      if (io) {
+        const rideId = payment.ride.toString();
+        console.log(`\n🔔 Emitting payment-completed event:`);
+        console.log(`   Room: ride:${rideId}`);
+        console.log(`   Driver ID: ${payment.driver}`);
+        console.log(`   Amount: ₹${payment.amount}`);
+        console.log(`   Passenger ID: ${passengerId}`);
+        
+        io.to(`ride:${rideId}`).emit('payment-completed', {
+          passengerId,
+          amount: payment.amount,
+          driverId: payment.driver.toString(),
+          rideId,
+          timestamp: new Date(),
+          message: 'Passenger payment confirmed'
+        });
+        
+        console.log(`✅ Payment-completed event emitted successfully to ride:${rideId}\n`);
+      } else {
+        console.error('❌ IO instance not available for socket emission');
+      }
+    } catch (socketErr) {
+      console.error('Socket emission error:', socketErr?.message || socketErr);
+      // Don't block response if socket emit fails
     }
 
     res.status(200).json({
       data: payment,
-      message: 'Payment confirmed successfully via UPI',
+      message: 'Payment confirmed via UPI; earnings credited to driver wallet',
     });
   } catch (err) {
     res.status(500).json({ message: err.message });

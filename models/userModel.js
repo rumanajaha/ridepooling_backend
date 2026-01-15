@@ -40,6 +40,14 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    completedRides: {
+      type: Number,
+      default: 0,
+    },
+    totalEarnings: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true }
 );

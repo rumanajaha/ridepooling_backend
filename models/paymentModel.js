@@ -65,7 +65,7 @@ paymentSchema.index({ passenger: 1, createdAt: -1 });
 paymentSchema.index({ driver: 1, createdAt: -1 });
 paymentSchema.index({ ride: 1 });
 paymentSchema.index({ status: 1 });
-paymentSchema.index({ transactionId: 1 });
+// Note: transactionId is already indexed via unique: true constraint above
 
 const Payment = mongoose.model('Payment', paymentSchema);
 export default Payment;
