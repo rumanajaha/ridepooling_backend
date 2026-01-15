@@ -80,8 +80,25 @@ const rideSchema = new mongoose.Schema(
           type: Number,
           default: 1,
         },
+        completedByPassenger: {
+          type: Boolean,
+          default: false,
+        },
+        paymentStatus: {
+          type: String,
+          enum: ['pending', 'paid', 'failed'],
+          default: 'pending',
+        },
+        paymentAmount: {
+          type: Number,
+          default: 0,
+        },
       },
     ],
+    completedByDriver: {
+      type: Boolean,
+      default: false,
+    },
     seatsBooked: {
       type: Number,
       default: 0,

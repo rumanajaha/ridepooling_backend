@@ -6,6 +6,11 @@ export const createPayment = async (req, res) => {
     const { rideId, paymentMethod } = req.body;
     const passengerId = req.userId;
 
+    // Only allow UPI payment method
+    if (paymentMethod !== 'upi') {
+      return res.status(400).json({ message: 'Only UPI payment method is allowed' });
+    }
+
     // Get ride details with driver
     const ride = await Ride.findById(rideId).populate('driver', 'name email phone');
     if (!ride) {
@@ -16,6 +21,11 @@ export const createPayment = async (req, res) => {
     const passengerEntry = ride.passengers.find((p) => p.userId?.toString() === passengerId);
     if (!passengerEntry) {
       return res.status(403).json({ message: 'Only booked passengers can pay for this ride' });
+    }
+
+    // Check if both driver and passenger have confirmed completion
+    if (!ride.completedByDriver || !passengerEntry.completedByPassenger) {
+      return res.status(400).json({ message: 'Both driver and passenger must confirm ride completion before payment' });
     }
 
     // Check if payment already exists
@@ -51,7 +61,7 @@ export const createPayment = async (req, res) => {
     // Return payment details for frontend integration with payment gateway
     res.status(201).json({
       data: payment,
-      message: 'Payment initiated',
+      message: 'Payment initiated via UPI',
       clientSecret: `sk_test_${transactionId}`, // Placeholder for Stripe-like integration
     });
   } catch (err) {
@@ -64,7 +74,7 @@ export const confirmPayment = async (req, res) => {
     const { paymentId, transactionId } = req.body;
     const passengerId = req.userId;
 
-    const payment = await Payment.findById(paymentId);
+    const payment = await Payment.findById(paymentId).populate('ride');
     if (!payment) {
       return res.status(404).json({ message: 'Payment not found' });
     }
@@ -75,7 +85,7 @@ export const confirmPayment = async (req, res) => {
     }
 
     // Simulate payment gateway verification
-    // In production, verify with actual payment gateway (Stripe, Razorpay, etc)
+    // In production, verify with actual payment gateway (Razorpay UPI, etc)
     if (!transactionId.startsWith('TXN_')) {
       return res.status(400).json({ message: 'Invalid transaction ID' });
     }
@@ -90,9 +100,18 @@ export const confirmPayment = async (req, res) => {
     payment.completedAt = new Date();
     await payment.save();
 
+    // Update passenger payment status in ride
+    const ride = await Ride.findById(payment.ride);
+    const passengerIndex = ride.passengers.findIndex((p) => p.userId.toString() === passengerId);
+    if (passengerIndex !== -1) {
+      ride.passengers[passengerIndex].paymentStatus = 'paid';
+      ride.passengers[passengerIndex].paymentAmount = payment.amount;
+      await ride.save();
+    }
+
     res.status(200).json({
       data: payment,
-      message: 'Payment confirmed successfully',
+      message: 'Payment confirmed successfully via UPI',
     });
   } catch (err) {
     res.status(500).json({ message: err.message });

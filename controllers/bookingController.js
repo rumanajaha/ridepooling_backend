@@ -113,3 +113,64 @@ export const cancelBooking = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// Mark ride as completed by driver
+export const markCompletedByDriver = async (req, res) => {
+  try {
+    const rideId = req.params.id;
+    const ride = await Ride.findById(rideId);
+
+    if (!ride) {
+      return res.status(404).json({ success: false, message: 'Ride not found' });
+    }
+
+    if (ride.driver.toString() !== req.userId) {
+      return res.status(403).json({ success: false, message: 'Only the driver can mark the ride as completed' });
+    }
+
+    ride.completedByDriver = true;
+    await ride.save();
+
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Marked as completed by driver',
+      data: { completedByDriver: true }
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Mark ride as completed by passenger
+export const markCompletedByPassenger = async (req, res) => {
+  try {
+    const rideId = req.params.id;
+    const ride = await Ride.findById(rideId);
+
+    if (!ride) {
+      return res.status(404).json({ success: false, message: 'Ride not found' });
+    }
+
+    const passengerIndex = ride.passengers.findIndex((p) => p.userId.toString() === req.userId);
+    if (passengerIndex === -1) {
+      return res.status(404).json({ success: false, message: 'Booking not found for this user' });
+    }
+
+    ride.passengers[passengerIndex].completedByPassenger = true;
+    await ride.save();
+
+    // Check if both driver and passenger marked as completed
+    const allCompleted = ride.completedByDriver && ride.passengers[passengerIndex].completedByPassenger;
+
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Marked as completed by passenger',
+      data: { 
+        completedByPassenger: true,
+        bothCompleted: allCompleted 
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};

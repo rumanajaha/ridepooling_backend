@@ -85,7 +85,7 @@ export const createRide = async (req, res) => {
   }
 };
 
-// Get all rides (with filters)
+// Get all rides (MARKETPLACE MODEL - shows ALL active rides with optional filters)
 export const getAllRides = async (req, res) => {
   try {
     const {
@@ -97,8 +97,13 @@ export const getAllRides = async (req, res) => {
       status = 'active',
     } = req.query;
 
-    const filter = { rideStatus: status };
+    // CORE RULE: Always start with active rides and future departures
+    const filter = { 
+      rideStatus: status,
+      departureTime: { $gte: new Date() } // Only future rides
+    };
 
+    // OPTIONAL FILTERS (not exact matches)
     if (startLocation) {
       filter['startLocation.address'] = new RegExp(startLocation, 'i');
     }
@@ -132,7 +137,7 @@ export const getAllRides = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: { rides },
+      data: { rides, count: rides.length },
     });
   } catch (error) {
     res.status(500).json({
@@ -158,7 +163,7 @@ export const getRideById = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: { ride },
+      data: ride,
     });
   } catch (error) {
     res.status(500).json({
