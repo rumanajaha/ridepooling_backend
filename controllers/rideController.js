@@ -116,7 +116,10 @@ export const getAllRides = async (req, res) => {
     }
 
     if (minSeats) {
-      filter.availableSeats = { $gte: parseInt(minSeats) };
+      // Check actual available seats (availableSeats - seatsBooked)
+      filter.$expr = {
+        $gte: [{ $subtract: ['$availableSeats', '$seatsBooked'] }, parseInt(minSeats)],
+      };
     }
 
     if (maxPrice) {

@@ -6,16 +6,16 @@ export const createPayment = async (req, res) => {
     const { rideId, paymentMethod } = req.body;
     const passengerId = req.userId;
 
-    // Get ride details
-    const ride = await Ride.findById(rideId).populate('driverId');
+    // Get ride details with driver
+    const ride = await Ride.findById(rideId).populate('driver', 'name email phone');
     if (!ride) {
       return res.status(404).json({ message: 'Ride not found' });
     }
 
-    // Check if passenger has booked this ride
-    const isPassenger = ride.passengers.includes(passengerId);
-    if (!isPassenger) {
-      return res.status(403).json({ message: 'Only passengers can pay for this ride' });
+    // Check if passenger has booked this ride and get their booking details
+    const passengerEntry = ride.passengers.find((p) => p.userId?.toString() === passengerId);
+    if (!passengerEntry) {
+      return res.status(403).json({ message: 'Only booked passengers can pay for this ride' });
     }
 
     // Check if payment already exists
@@ -28,8 +28,9 @@ export const createPayment = async (req, res) => {
       return res.status(400).json({ message: 'Payment already exists for this booking' });
     }
 
-    // Calculate amount (price per seat)
-    const amount = ride.pricePerSeat;
+    // Calculate amount based on seats booked for this passenger
+    const bookedSeats = passengerEntry.bookedSeats || 1;
+    const amount = ride.pricePerSeat * bookedSeats;
 
     // Generate transaction ID
     const transactionId = `TXN_${Date.now()}_${passengerId}`;
@@ -38,7 +39,7 @@ export const createPayment = async (req, res) => {
     const payment = new Payment({
       ride: rideId,
       passenger: passengerId,
-      driver: ride.driverId._id,
+      driver: ride.driver,
       amount,
       paymentMethod,
       transactionId,
@@ -79,6 +80,10 @@ export const confirmPayment = async (req, res) => {
       return res.status(400).json({ message: 'Invalid transaction ID' });
     }
 
+    if (payment.status === 'completed') {
+      return res.status(400).json({ message: 'Payment already completed' });
+    }
+
     // Update payment status
     payment.status = 'completed';
     payment.transactionId = transactionId;
@@ -107,6 +112,11 @@ export const refundPayment = async (req, res) => {
     // Verify payment belongs to user
     if (payment.passenger.toString() !== passengerId) {
       return res.status(403).json({ message: 'Unauthorized refund request' });
+    }
+
+    // Prevent duplicate refunds
+    if (payment.status === 'refunded') {
+      return res.status(400).json({ message: 'Payment already refunded' });
     }
 
     // Can only refund completed payments
@@ -138,15 +148,10 @@ export const getPaymentHistory = async (req, res) => {
     const userId = req.userId;
     const { type } = req.query; // 'passenger' or 'driver'
 
-    let query = {};
-    if (type === 'driver') {
-      query = { driver: userId };
-    } else {
-      query = { passenger: userId };
-    }
+    const query = type === 'driver' ? { driver: userId } : { passenger: userId };
 
     const payments = await Payment.find(query)
-      .populate('ride', 'origin destination rideStatus')
+      .populate('ride', 'startLocation endLocation rideStatus departureTime pricePerSeat')
       .populate('passenger', 'name')
       .populate('driver', 'name')
       .sort({ createdAt: -1 });
