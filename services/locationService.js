@@ -82,6 +82,50 @@ class LocationService {
   }
 
   /**
+   * Store passenger's current location for live sharing
+   * TTL: 5 minutes
+   */
+  async updatePassengerLocation(rideId, userId, locationData) {
+    if (!this.client || !this.isConnected) {
+      console.warn('Redis not available, skipping passenger location storage');
+      return false;
+    }
+
+    try {
+      const key = `live:ride:${rideId}:passenger:${userId}`;
+      const data = JSON.stringify({
+        ...locationData,
+        updatedAt: Date.now()
+      });
+
+      await this.client.setEx(key, 300, data); // 5 minutes TTL
+      return true;
+    } catch (error) {
+      console.error('Error storing passenger location:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get passenger's current location
+   */
+  async getPassengerLocation(rideId, userId) {
+    if (!this.client || !this.isConnected) {
+      return null;
+    }
+
+    try {
+      const key = `live:ride:${rideId}:passenger:${userId}`;
+      const data = await this.client.get(key);
+      
+      return data ? JSON.parse(data) : null;
+    } catch (error) {
+      console.error('Error getting passenger location:', error);
+      return null;
+    }
+  }
+
+  /**
    * Store recent location history for ETA calculation
    * Keep last 10 points only
    */

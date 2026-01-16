@@ -1,5 +1,7 @@
 import Ride from '../models/rideModel.js';
 import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
+import { generateRideCode } from '../utils/codeGenerator.js';
 
 const { ObjectId } = mongoose.Types;
 
@@ -83,6 +85,8 @@ export const getMyBookings = async (req, res) => {
             driver: ride.driver,
             pricePerSeat: ride.pricePerSeat,
             rideStatus: ride.rideStatus,
+            pickupCode: p.status === 'accepted' ? ride.pickupCodePlain : null,
+            pickupVerified: ride.pickupVerified,
           });
         });
     });
@@ -112,6 +116,7 @@ export const getMyBookingsAsDriver = async (req, res) => {
       rideStatus: ride.rideStatus,
       pricePerSeat: ride.pricePerSeat,
       driver: ride.driver,
+      pickupVerified: ride.pickupVerified,
       passengers: ride.passengers.map((p) => ({
         userId: p.userId?._id,
         name: p.userId?.name,
@@ -153,6 +158,160 @@ export const cancelBooking = async (req, res) => {
     await ride.save();
 
     return res.status(200).json({ success: true, message: 'Booking cancelled' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Accept booking by driver
+export const acceptBooking = async (req, res) => {
+  try {
+    const { rideId, passengerId } = req.params;
+    const driverId = new ObjectId(req.userId);
+    
+    const ride = await Ride.findById(rideId).populate('passengers.userId', 'name email phone');
+
+    if (!ride) {
+      return res.status(404).json({ success: false, message: 'Ride not found' });
+    }
+
+    if (ride.driver.toString() !== driverId.toString()) {
+      return res.status(403).json({ success: false, message: 'Only the driver can accept bookings' });
+    }
+
+    const passengerIndex = ride.passengers.findIndex(
+      (p) => p.userId._id.toString() === passengerId
+    );
+
+    if (passengerIndex === -1) {
+      return res.status(404).json({ success: false, message: 'Passenger not found in this ride' });
+    }
+
+    if (ride.passengers[passengerIndex].status === 'accepted') {
+      return res.status(400).json({ success: false, message: 'Booking already accepted' });
+    }
+
+    // Generate ride code word when accepting
+    const rideCode = generateRideCode();
+    const codeHash = await bcrypt.hash(rideCode, 10);
+    
+    ride.passengers[passengerIndex].status = 'accepted';
+    ride.pickupCodePlain = rideCode; // Store plain for passenger to see
+    ride.pickupCodeHash = codeHash;
+    ride.pickupCodeExpiry = new Date(Date.now() + 30 * 60 * 1000); // 30 min expiry
+    ride.pickupVerified = false;
+    
+    await ride.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Booking accepted successfully',
+      data: {
+        rideCode, // Send to frontend to show passenger
+        ride,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Reject booking by driver
+export const rejectBooking = async (req, res) => {
+  try {
+    const { rideId, passengerId } = req.params;
+    const driverId = new ObjectId(req.userId);
+    
+    const ride = await Ride.findById(rideId);
+
+    if (!ride) {
+      return res.status(404).json({ success: false, message: 'Ride not found' });
+    }
+
+    if (ride.driver.toString() !== driverId.toString()) {
+      return res.status(403).json({ success: false, message: 'Only the driver can reject bookings' });
+    }
+
+    const passengerIndex = ride.passengers.findIndex(
+      (p) => p.userId.toString() === passengerId
+    );
+
+    if (passengerIndex === -1) {
+      return res.status(404).json({ success: false, message: 'Passenger not found in this ride' });
+    }
+
+    const passenger = ride.passengers[passengerIndex];
+    ride.seatsBooked = Math.max(0, ride.seatsBooked - (passenger.bookedSeats || 0));
+    ride.passengers.splice(passengerIndex, 1);
+    
+    await ride.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Booking rejected',
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Verify pickup code
+export const verifyPickupCode = async (req, res) => {
+  try {
+    const rideId = req.params.id;
+    const { code } = req.body;
+    const driverId = new ObjectId(req.userId);
+    
+    if (!code) {
+      return res.status(400).json({ success: false, message: 'Ride code is required' });
+    }
+
+    const ride = await Ride.findById(rideId);
+
+    if (!ride) {
+      return res.status(404).json({ success: false, message: 'Ride not found' });
+    }
+
+    if (ride.driver.toString() !== driverId.toString()) {
+      return res.status(403).json({ success: false, message: 'Only the driver can verify pickup' });
+    }
+
+    if (ride.pickupVerified) {
+      return res.status(400).json({ success: false, message: 'Pickup already verified' });
+    }
+
+    if (!ride.pickupCodeHash) {
+      return res.status(400).json({ success: false, message: 'No pickup code set for this ride' });
+    }
+
+    // Check expiry
+    if (ride.pickupCodeExpiry && new Date() > ride.pickupCodeExpiry) {
+      return res.status(400).json({ success: false, message: 'Ride code has expired' });
+    }
+
+    // Verify code
+    const isValid = await bcrypt.compare(code.trim(), ride.pickupCodeHash);
+
+    if (!isValid) {
+      return res.status(400).json({ success: false, message: 'Invalid ride code' });
+    }
+
+    // Mark as verified and start ride
+    ride.pickupVerified = true;
+    ride.rideStatus = 'in_progress';
+    ride.pickupCodeHash = null; // Invalidate after use
+    ride.pickupCodePlain = null;
+    
+    await ride.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Pickup verified! Ride started.',
+      data: {
+        rideStatus: ride.rideStatus,
+        pickupVerified: true,
+      },
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message });
   }

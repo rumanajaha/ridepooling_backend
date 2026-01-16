@@ -159,6 +159,42 @@ export function initializeSocket(server) {
       }
     });
 
+    // Passenger sends location update (live location sharing)
+    socket.on('update-passenger-location', async (data) => {
+      try {
+        const userInfo = connectedUsers.get(socket.id);
+        
+        if (!userInfo || userInfo.role !== 'passenger') {
+          socket.emit('error', { message: 'Only passengers can share their location' });
+          return;
+        }
+
+        const { rideId, userId } = userInfo;
+        const { latitude, longitude } = data;
+
+        if (!latitude || !longitude) {
+          return;
+        }
+
+        const passengerLocationData = {
+          userId,
+          userName: socket.userName,
+          latitude,
+          longitude,
+          timestamp: Date.now()
+        };
+
+        // Store passenger location in Redis
+        await locationService.updatePassengerLocation(rideId, userId, passengerLocationData);
+
+        // Broadcast to driver only
+        socket.to(`ride:${rideId}`).emit('passenger-location-update', passengerLocationData);
+
+      } catch (error) {
+        console.error('Error updating passenger location:', error);
+      }
+    });
+
     // Real-time chat
     socket.on('send-message', async (data) => {
       try {

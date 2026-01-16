@@ -1,5 +1,15 @@
 import express from 'express';
-import { bookRide, getMyBookings, getMyBookingsAsDriver, cancelBooking, markCompletedByDriver, markCompletedByPassenger } from '../controllers/bookingController.js';
+import { 
+  bookRide, 
+  getMyBookings, 
+  getMyBookingsAsDriver, 
+  cancelBooking, 
+  acceptBooking,
+  rejectBooking,
+  verifyPickupCode,
+  markCompletedByDriver, 
+  markCompletedByPassenger 
+} from '../controllers/bookingController.js';
 import authMiddleware from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -14,6 +24,15 @@ router.get('/driver', authMiddleware, getMyBookingsAsDriver);
 
 // Cancel a booking
 router.delete('/:id', authMiddleware, cancelBooking);
+
+// Accept booking by driver
+router.post('/:rideId/accept/:passengerId', authMiddleware, acceptBooking);
+
+// Reject booking by driver
+router.post('/:rideId/reject/:passengerId', authMiddleware, rejectBooking);
+
+// Verify pickup code
+router.post('/:id/verify-pickup', authMiddleware, verifyPickupCode);
 
 // Mark ride as completed by driver
 router.post('/:id/complete-driver', authMiddleware, markCompletedByDriver);

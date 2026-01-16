@@ -55,6 +55,17 @@ const rideSchema = new mongoose.Schema(
       model: String,
       color: String,
       licensePlate: String,
+      registrationNumber: String,
+      year: Number,
+      fuelType: {
+        type: String,
+        enum: ['petrol', 'diesel', 'electric', 'hybrid'],
+      },
+      acAvailable: {
+        type: Boolean,
+        default: false,
+      },
+      interiorPhoto: String,
     },
     description: {
       type: String,
@@ -102,6 +113,19 @@ const rideSchema = new mongoose.Schema(
     seatsBooked: {
       type: Number,
       default: 0,
+    },
+    pickupCodeHash: {
+      type: String,
+    },
+    pickupCodePlain: {
+      type: String,
+    },
+    pickupCodeExpiry: {
+      type: Date,
+    },
+    pickupVerified: {
+      type: Boolean,
+      default: false,
     },
     notes: String,
     preferences: {
