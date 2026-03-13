@@ -7,11 +7,13 @@ import {
   getDriverAverageRating,
   deleteReview,
 } from '../controllers/reviewController.js';
+import { validateRequest } from '../middleware/validateRequest.js';
+import { createReviewSchema } from '../validation/schemas.js';
 
 const router = express.Router();
 
 // Create review (protected)
-router.post('/', authMiddleware, createReview);
+router.post('/', authMiddleware, validateRequest(createReviewSchema), createReview);
 
 // Get reviews for a ride
 router.get('/ride/:rideId', getReviewsByRide);

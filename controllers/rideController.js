@@ -1,6 +1,7 @@
-import mongoose from 'mongoose';
 import Ride from '../models/rideModel.js';
 import User from '../models/userModel.js';
+import { calculateDistance } from '../utils/haversine.js';
+import { getRouteEstimate } from '../services/fareService.js';
 
 // Create a new ride (offer a ride)
 export const createRide = async (req, res) => {
@@ -8,17 +9,24 @@ export const createRide = async (req, res) => {
     const {
       startLocation,
       endLocation,
-      departureTime,
-      availableSeats,
-      pricePerSeat,
+      departureTime, // Keep departureTime for validation, will derive date/time if needed
+      availableSeats, // Renamed to seats in the snippet, but keeping for now
+      pricePerSeat, // Renamed to price in the snippet, but keeping for now
       vehicleInfo,
       description,
       preferences,
       notes,
+      // New fields implied by snippet
+      seats, // Assuming this replaces availableSeats
+      price, // Assuming this replaces pricePerSeat
+      userPreference,
     } = req.body;
 
+    const effectiveSeats = Number(seats ?? availableSeats);
+    const effectivePrice = Number(price ?? pricePerSeat);
+
     // Validate required fields
-    if (!startLocation || !endLocation || !departureTime || !availableSeats || pricePerSeat === undefined) {
+    if (!startLocation || !endLocation || !departureTime || !Number.isFinite(effectiveSeats) || !Number.isFinite(effectivePrice)) {
       return res.status(400).json({
         success: false,
         message: 'All required fields must be provided',
@@ -41,7 +49,7 @@ export const createRide = async (req, res) => {
     }
 
     // Validate seats
-    if (availableSeats < 1 || availableSeats > 7) {
+    if (effectiveSeats < 1 || effectiveSeats > 7) {
       return res.status(400).json({
         success: false,
         message: 'Available seats must be between 1 and 7',
@@ -49,21 +57,48 @@ export const createRide = async (req, res) => {
     }
 
     // Validate departure time is in the future
-    if (new Date(departureTime) <= new Date()) {
+    const departureDateObj = new Date(departureTime);
+    if (departureDateObj <= new Date()) {
       return res.status(400).json({
         success: false,
         message: 'Departure time must be in the future',
       });
     }
 
+    // Fetch driver's user data for vehicle info if needed
+    const user = await User.findById(req.userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Driver not found' });
+    }
+
+    // KYC Verification Check
+    if (user.kycStatus !== 'verified') {
+      return res.status(403).json({
+        success: false,
+        message: 'Your account is not KYC verified. Please upload documents and wait for approval before offering rides.',
+        kycStatus: user.kycStatus
+      });
+    }
+
+    // Generate Fare Estimate
+    const fareEstimate = await getRouteEstimate(startLocation, endLocation);
+
     const newRide = new Ride({
       driver: req.userId,
       startLocation,
       endLocation,
-      departureTime,
-      availableSeats,
-      pricePerSeat,
-      vehicleInfo,
+      departureTime, // Using the original departureTime directly
+      availableSeats: effectiveSeats,
+      pricePerSeat: effectivePrice > 0 ? effectivePrice : fareEstimate.totalFare,
+      fareBreakdown: fareEstimate,
+      vehicleInfo: {
+        ...vehicleInfo,
+        // Fallback to user's primary vehicle if info missing
+        make: vehicleInfo?.make || user.vehicles.find(v => v.isPrimary)?.make,
+        model: vehicleInfo?.model || user.vehicles.find(v => v.isPrimary)?.model,
+        licensePlate: vehicleInfo?.licensePlate || user.vehicles.find(v => v.isPrimary)?.licensePlate,
+      },
+      userPreference: userPreference || {}, // Assuming userPreference is a new field
       description,
       preferences: preferences || {},
       notes,
@@ -95,10 +130,13 @@ export const getAllRides = async (req, res) => {
       minSeats,
       maxPrice,
       status = 'active',
+      latitude,
+      longitude,
+      maxDistanceKm,
     } = req.query;
 
     // CORE RULE: Always start with active rides and future departures
-    const filter = { 
+    const filter = {
       rideStatus: status,
       departureTime: { $gte: new Date() } // Only future rides
     };
@@ -131,9 +169,24 @@ export const getAllRides = async (req, res) => {
       filter.pricePerSeat = { $lte: parseInt(maxPrice) };
     }
 
-    const rides = await Ride.find(filter)
-      .populate('driver', 'name email phone city rating profileImage')
+    let rides = await Ride.find(filter)
+      .populate('driver', 'name city rating profileImage')
       .sort({ departureTime: 1 });
+
+    if (latitude && longitude) {
+      const lat = Number(latitude);
+      const lng = Number(longitude);
+      const maxKm = Number(maxDistanceKm || 25);
+
+      if (Number.isFinite(lat) && Number.isFinite(lng) && Number.isFinite(maxKm)) {
+        rides = rides.filter((ride) => {
+          const rideLat = Number(ride.startLocation?.latitude);
+          const rideLng = Number(ride.startLocation?.longitude);
+          if (!Number.isFinite(rideLat) || !Number.isFinite(rideLng)) return false;
+          return calculateDistance(lat, lng, rideLat, rideLng) <= maxKm;
+        });
+      }
+    }
 
     res.status(200).json({
       success: true,
@@ -161,6 +214,23 @@ export const getRideById = async (req, res) => {
       });
     }
 
+    const isDriver = ride.driver?._id?.toString() === req.userId;
+    const isPassenger = ride.passengers.some((p) => p.userId?._id?.toString() === req.userId);
+    const hasAcceptedBooking = ride.passengers.some(
+      (p) => p.userId?._id?.toString() === req.userId && ['accepted', 'completed'].includes(p.status)
+    );
+
+    // Hide sensitive driver contact details unless requester is a participant with accepted/completed status or driver
+    if (!isDriver && !hasAcceptedBooking && ride.driver) {
+      ride.driver.phone = "********" + ride.driver.phone.slice(-3);
+      ride.driver.email = undefined;
+    }
+
+    if (!isDriver && !isPassenger) {
+      // Public requesters can view ride basics, but passenger list identity is hidden.
+      ride.passengers = [];
+    }
+
     res.status(200).json({
       success: true,
       data: ride,
@@ -170,6 +240,21 @@ export const getRideById = async (req, res) => {
       success: false,
       message: error.message,
     });
+  }
+};
+
+// Get Fare Estimate
+export const getFareEstimateController = async (req, res) => {
+  try {
+    const { startLocation, endLocation } = req.body;
+    if (!startLocation || !endLocation) {
+      return res.status(400).json({ success: false, message: 'Source and destination required' });
+    }
+
+    const estimate = await getRouteEstimate(startLocation, endLocation);
+    res.status(200).json({ success: true, data: estimate });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -313,6 +398,9 @@ export const searchRides = async (req, res) => {
       departureDate,
       minSeats,
       maxPrice,
+      latitude,
+      longitude,
+      maxDistanceKm,
     } = req.query;
 
     const filter = { rideStatus: 'active' };
@@ -346,10 +434,25 @@ export const searchRides = async (req, res) => {
       filter.pricePerSeat = { $lte: parseInt(maxPrice) };
     }
 
-    const rides = await Ride.find(filter)
-      .populate('driver', 'name email phone city rating profileImage')
+    let rides = await Ride.find(filter)
+      .populate('driver', 'name city rating profileImage')
       .sort({ pricePerSeat: 1, departureTime: 1 })
       .limit(20);
+
+    if (latitude && longitude) {
+      const lat = Number(latitude);
+      const lng = Number(longitude);
+      const maxKm = Number(maxDistanceKm || 25);
+
+      if (Number.isFinite(lat) && Number.isFinite(lng) && Number.isFinite(maxKm)) {
+        rides = rides.filter((ride) => {
+          const rideLat = Number(ride.startLocation?.latitude);
+          const rideLng = Number(ride.startLocation?.longitude);
+          if (!Number.isFinite(rideLat) || !Number.isFinite(rideLng)) return false;
+          return calculateDistance(lat, lng, rideLat, rideLng) <= maxKm;
+        });
+      }
+    }
 
     res.status(200).json({
       success: true,

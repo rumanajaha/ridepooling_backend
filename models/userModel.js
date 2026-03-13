@@ -40,6 +40,55 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    kycStatus: {
+      type: String,
+      enum: ['pending', 'verified', 'rejected'],
+      default: 'pending',
+    },
+    kycRejectionReason: {
+      type: String,
+      default: '',
+    },
+    kycDocuments: {
+      licensePhoto: String,
+      idPhoto: String,
+      vehiclePhoto: String,
+      platePhoto: String,
+    },
+    upiId: {
+      type: String,
+      default: null,
+    },
+    vehicles: [
+      {
+        make: String,
+        model: String,
+        color: String,
+        licensePlate: String,
+        registrationNumber: String,
+        year: Number,
+        isPrimary: { type: Boolean, default: false },
+      },
+    ],
+    trustedContacts: [
+      {
+        name: {
+          type: String,
+          trim: true,
+          maxlength: 120,
+        },
+        phone: {
+          type: String,
+          trim: true,
+          maxlength: 20,
+        },
+        relationship: {
+          type: String,
+          trim: true,
+          maxlength: 60,
+        },
+      },
+    ],
     completedRides: {
       type: Number,
       default: 0,

@@ -1,9 +1,35 @@
 import { createClient } from 'redis';
+import logger from '../utils/logger.js';
 
 class LocationService {
   constructor() {
     this.client = null;
     this.isConnected = false;
+    this.fallback = {
+      riderLocations: new Map(),
+      passengerLocations: new Map(),
+      locationHistory: new Map(),
+      chatMessages: new Map(),
+    };
+  }
+
+  setFallbackWithTTL(store, key, value, ttlSeconds) {
+    store.set(key, {
+      value,
+      expiresAt: Date.now() + ttlSeconds * 1000,
+    });
+  }
+
+  getFallbackValue(store, key) {
+    const entry = store.get(key);
+    if (!entry) return null;
+
+    if (entry.expiresAt <= Date.now()) {
+      store.delete(key);
+      return null;
+    }
+
+    return entry.value;
   }
 
   async connect() {
@@ -25,14 +51,14 @@ class LocationService {
       });
 
       this.client.on('connect', () => {
-        console.log('✅ Redis connected for live tracking');
+        logger.info('Redis connected for live tracking');
         this.isConnected = true;
       });
 
       await this.client.connect();
     } catch (error) {
-      console.error('Failed to connect to Redis:', error.message);
-      console.log('⚠️ Running without Redis - live tracking limited');
+      logger.error('Failed to connect to Redis in location service', { error: error.message });
+      logger.warn('Running without Redis, live tracking limited');
       this.client = null;
     }
   }
@@ -43,8 +69,16 @@ class LocationService {
    */
   async updateRiderLocation(rideId, locationData) {
     if (!this.client || !this.isConnected) {
-      console.warn('Redis not available, skipping location storage');
-      return false;
+      this.setFallbackWithTTL(
+        this.fallback.riderLocations,
+        `live:ride:${rideId}`,
+        {
+          ...locationData,
+          updatedAt: Date.now(),
+        },
+        300
+      );
+      return true;
     }
 
     try {
@@ -57,7 +91,7 @@ class LocationService {
       await this.client.setEx(key, 300, data); // 5 minutes TTL
       return true;
     } catch (error) {
-      console.error('Error storing location:', error);
+      logger.error('Error storing rider location', { error: error.message, rideId });
       return false;
     }
   }
@@ -67,7 +101,7 @@ class LocationService {
    */
   async getRiderLocation(rideId) {
     if (!this.client || !this.isConnected) {
-      return null;
+      return this.getFallbackValue(this.fallback.riderLocations, `live:ride:${rideId}`);
     }
 
     try {
@@ -76,7 +110,7 @@ class LocationService {
       
       return data ? JSON.parse(data) : null;
     } catch (error) {
-      console.error('Error getting location:', error);
+      logger.error('Error getting rider location', { error: error.message, rideId });
       return null;
     }
   }
@@ -87,8 +121,16 @@ class LocationService {
    */
   async updatePassengerLocation(rideId, userId, locationData) {
     if (!this.client || !this.isConnected) {
-      console.warn('Redis not available, skipping passenger location storage');
-      return false;
+      this.setFallbackWithTTL(
+        this.fallback.passengerLocations,
+        `live:ride:${rideId}:passenger:${userId}`,
+        {
+          ...locationData,
+          updatedAt: Date.now(),
+        },
+        300
+      );
+      return true;
     }
 
     try {
@@ -101,7 +143,7 @@ class LocationService {
       await this.client.setEx(key, 300, data); // 5 minutes TTL
       return true;
     } catch (error) {
-      console.error('Error storing passenger location:', error);
+      logger.error('Error storing passenger location', { error: error.message, rideId, userId });
       return false;
     }
   }
@@ -111,7 +153,10 @@ class LocationService {
    */
   async getPassengerLocation(rideId, userId) {
     if (!this.client || !this.isConnected) {
-      return null;
+      return this.getFallbackValue(
+        this.fallback.passengerLocations,
+        `live:ride:${rideId}:passenger:${userId}`
+      );
     }
 
     try {
@@ -120,7 +165,7 @@ class LocationService {
       
       return data ? JSON.parse(data) : null;
     } catch (error) {
-      console.error('Error getting passenger location:', error);
+      logger.error('Error getting passenger location', { error: error.message, rideId, userId });
       return null;
     }
   }
@@ -131,7 +176,11 @@ class LocationService {
    */
   async addLocationHistory(rideId, locationData) {
     if (!this.client || !this.isConnected) {
-      return false;
+      const key = `history:ride:${rideId}`;
+      const existing = this.getFallbackValue(this.fallback.locationHistory, key) || [];
+      const updated = [...existing, locationData].slice(-10);
+      this.setFallbackWithTTL(this.fallback.locationHistory, key, updated, 3600);
+      return true;
     }
 
     try {
@@ -149,7 +198,7 @@ class LocationService {
       
       return true;
     } catch (error) {
-      console.error('Error adding location history:', error);
+      logger.error('Error adding location history', { error: error.message, rideId });
       return false;
     }
   }
@@ -159,7 +208,7 @@ class LocationService {
    */
   async getLocationHistory(rideId) {
     if (!this.client || !this.isConnected) {
-      return [];
+      return this.getFallbackValue(this.fallback.locationHistory, `history:ride:${rideId}`) || [];
     }
 
     try {
@@ -168,7 +217,7 @@ class LocationService {
       
       return data.map(item => JSON.parse(item));
     } catch (error) {
-      console.error('Error getting location history:', error);
+      logger.error('Error getting location history', { error: error.message, rideId });
       return [];
     }
   }
@@ -178,7 +227,14 @@ class LocationService {
    */
   async clearRideData(rideId) {
     if (!this.client || !this.isConnected) {
-      return false;
+      this.fallback.riderLocations.delete(`live:ride:${rideId}`);
+      this.fallback.locationHistory.delete(`history:ride:${rideId}`);
+      const passengerPrefix = `live:ride:${rideId}:passenger:`;
+      Array.from(this.fallback.passengerLocations.keys())
+        .filter((k) => k.startsWith(passengerPrefix))
+        .forEach((k) => this.fallback.passengerLocations.delete(k));
+      this.fallback.chatMessages.delete(`chat:ride:${rideId}`);
+      return true;
     }
 
     try {
@@ -186,7 +242,7 @@ class LocationService {
       await this.client.del(`history:ride:${rideId}`);
       return true;
     } catch (error) {
-      console.error('Error clearing ride data:', error);
+      logger.error('Error clearing ride data', { error: error.message, rideId });
       return false;
     }
   }
@@ -196,7 +252,11 @@ class LocationService {
    */
   async storeChatMessage(rideId, message) {
     if (!this.client || !this.isConnected) {
-      return false;
+      const key = `chat:ride:${rideId}`;
+      const existing = this.getFallbackValue(this.fallback.chatMessages, key) || [];
+      const updated = [...existing, message].slice(-100);
+      this.setFallbackWithTTL(this.fallback.chatMessages, key, updated, 86400);
+      return true;
     }
 
     try {
@@ -205,7 +265,7 @@ class LocationService {
       await this.client.expire(key, 86400); // 24 hours
       return true;
     } catch (error) {
-      console.error('Error storing chat message:', error);
+      logger.error('Error storing chat message', { error: error.message, rideId });
       return false;
     }
   }
@@ -214,7 +274,7 @@ class LocationService {
     if (this.client && this.isConnected) {
       await this.client.quit();
       this.isConnected = false;
-      console.log('Redis disconnected');
+      logger.info('Redis disconnected');
     }
   }
 }

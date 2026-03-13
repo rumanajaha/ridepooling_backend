@@ -36,6 +36,11 @@ const paymentSchema = new mongoose.Schema(
       enum: ['card', 'upi', 'wallet', 'net_banking'],
       required: true,
     },
+    // Cashfree order identifier (distinct from transaction reference)
+    orderId: {
+      type: String,
+      index: true,
+    },
     transactionId: {
       type: String,
       unique: true,
@@ -43,7 +48,10 @@ const paymentSchema = new mongoose.Schema(
     },
     paymentGateway: {
       type: String,
-      default: 'stripe',
+      default: 'cashfree',
+    },
+    paymentSessionId: {
+      type: String,
     },
     notes: {
       type: String,

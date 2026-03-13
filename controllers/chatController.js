@@ -13,9 +13,9 @@ export const getChats = async (req, res) => {
       })
       .sort({ updatedAt: -1 });
 
-    res.status(200).json({ data: chats });
+    res.status(200).json({ success: true, data: chats, requestId: req.requestId });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, message: 'Failed to fetch chats', requestId: req.requestId });
   }
 };
 
@@ -27,11 +27,12 @@ export const getMessages = async (req, res) => {
     // Verify user is participant in chat
     const chat = await Chat.findById(chatId);
     if (!chat) {
-      return res.status(404).json({ message: 'Chat not found' });
+      return res.status(404).json({ success: false, message: 'Chat not found' });
     }
 
-    if (!chat.participants.includes(userId)) {
-      return res.status(403).json({ message: 'Not a participant in this chat' });
+    const isParticipant = chat.participants.some((p) => p.toString() === userId);
+    if (!isParticipant) {
+      return res.status(403).json({ success: false, message: 'Not a participant in this chat' });
     }
 
     const messages = await Message.find({ chat: chatId })
@@ -45,9 +46,9 @@ export const getMessages = async (req, res) => {
       { isRead: true }
     );
 
-    res.status(200).json({ data: messages });
+    res.status(200).json({ success: true, data: messages, requestId: req.requestId });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, message: 'Failed to fetch messages', requestId: req.requestId });
   }
 };
 
@@ -58,7 +59,7 @@ export const sendMessage = async (req, res) => {
 
     // Validate content
     if (!content || content.trim().length === 0) {
-      return res.status(400).json({ message: 'Message cannot be empty' });
+      return res.status(400).json({ success: false, message: 'Message cannot be empty' });
     }
 
     // Create or get chat
@@ -66,7 +67,12 @@ export const sendMessage = async (req, res) => {
     if (chatId) {
       chat = await Chat.findById(chatId);
       if (!chat) {
-        return res.status(404).json({ message: 'Chat not found' });
+        return res.status(404).json({ success: false, message: 'Chat not found' });
+      }
+
+      const isParticipant = chat.participants.some((p) => p.toString() === senderId);
+      if (!isParticipant) {
+        return res.status(403).json({ success: false, message: 'Not a participant in this chat' });
       }
     } else {
       // Create new chat if doesn't exist
@@ -101,9 +107,9 @@ export const sendMessage = async (req, res) => {
     chat.updatedAt = new Date();
     await chat.save();
 
-    res.status(201).json({ data: message, message: 'Message sent successfully' });
+    res.status(201).json({ success: true, data: message, message: 'Message sent successfully', requestId: req.requestId });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, message: 'Failed to send message', requestId: req.requestId });
   }
 };
 
@@ -114,20 +120,20 @@ export const markAsRead = async (req, res) => {
 
     const message = await Message.findById(messageId);
     if (!message) {
-      return res.status(404).json({ message: 'Message not found' });
+      return res.status(404).json({ success: false, message: 'Message not found' });
     }
 
     // Only receiver can mark as read
     if (message.receiver.toString() !== userId) {
-      return res.status(403).json({ message: 'Can only mark your own messages as read' });
+      return res.status(403).json({ success: false, message: 'Can only mark your own messages as read' });
     }
 
     message.isRead = true;
     await message.save();
 
-    res.status(200).json({ data: message });
+    res.status(200).json({ success: true, data: message, requestId: req.requestId });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, message: 'Failed to mark message as read', requestId: req.requestId });
   }
 };
 
@@ -138,12 +144,13 @@ export const deleteChat = async (req, res) => {
 
     const chat = await Chat.findById(chatId);
     if (!chat) {
-      return res.status(404).json({ message: 'Chat not found' });
+      return res.status(404).json({ success: false, message: 'Chat not found' });
     }
 
     // Verify user is participant
-    if (!chat.participants.includes(userId)) {
-      return res.status(403).json({ message: 'Not a participant in this chat' });
+    const isParticipant = chat.participants.some((p) => p.toString() === userId);
+    if (!isParticipant) {
+      return res.status(403).json({ success: false, message: 'Not a participant in this chat' });
     }
 
     // Delete all messages in chat
@@ -152,9 +159,9 @@ export const deleteChat = async (req, res) => {
     // Delete chat
     await Chat.findByIdAndDelete(chatId);
 
-    res.status(200).json({ message: 'Chat deleted successfully' });
+    res.status(200).json({ success: true, message: 'Chat deleted successfully', requestId: req.requestId });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, message: 'Failed to delete chat', requestId: req.requestId });
   }
 };
 
@@ -167,8 +174,8 @@ export const getUnreadCount = async (req, res) => {
       isRead: false,
     });
 
-    res.status(200).json({ data: { unreadCount } });
+    res.status(200).json({ success: true, data: { unreadCount }, requestId: req.requestId });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ success: false, message: 'Failed to fetch unread count', requestId: req.requestId });
   }
 };

@@ -2,6 +2,8 @@ import Ride from '../models/rideModel.js';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import { generateRideCode } from '../utils/codeGenerator.js';
+import { encryptCode, decryptCode } from '../utils/secureCode.js';
+import { canTransitionRideStatus } from '../utils/rideStateMachine.js';
 
 const { ObjectId } = mongoose.Types;
 
@@ -9,7 +11,13 @@ const { ObjectId } = mongoose.Types;
 export const bookRide = async (req, res) => {
   try {
     const rideId = req.params.id;
-    const seatsRequested = Math.max(1, parseInt(req.body.seats || 1));
+    const parsedSeats = Number(req.body.seats ?? 1);
+
+    if (!Number.isInteger(parsedSeats) || parsedSeats < 1 || parsedSeats > 7) {
+      return res.status(400).json({ success: false, message: 'Seats must be an integer between 1 and 7' });
+    }
+
+    const seatsRequested = parsedSeats;
 
     const ride = await Ride.findById(rideId).populate('driver', 'name email phone city rating profileImage');
 
@@ -36,26 +44,50 @@ export const bookRide = async (req, res) => {
       return res.status(400).json({ success: false, message: 'You have already requested this ride' });
     }
 
-    const seatsLeft = ride.availableSeats - ride.seatsBooked;
-    if (seatsRequested > seatsLeft) {
-      return res.status(400).json({ success: false, message: `Only ${seatsLeft} seat(s) left` });
-    }
+    // Atomic update prevents overselling seats under concurrent booking requests
+    const updatedRide = await Ride.findOneAndUpdate(
+      {
+        _id: rideId,
+        rideStatus: 'active',
+        departureTime: { $gt: new Date() },
+        driver: { $ne: req.userId },
+        'passengers.userId': { $ne: req.userId },
+        $expr: { $gte: [{ $subtract: ['$availableSeats', '$seatsBooked'] }, seatsRequested] },
+      },
+      {
+        $push: { passengers: { userId: req.userId, bookedSeats: seatsRequested, status: 'pending' } },
+        $inc: { seatsBooked: seatsRequested },
+      },
+      { new: true }
+    )
+      .populate('driver', 'name email phone city rating profileImage')
+      .populate('passengers.userId', 'name email phone city rating profileImage');
 
-    ride.passengers.push({ userId: req.userId, bookedSeats: seatsRequested, status: 'pending' });
-    ride.seatsBooked += seatsRequested;
-    await ride.save();
-    await ride.populate('passengers.userId', 'name email phone city rating profileImage');
+    if (!updatedRide) {
+      const freshRide = await Ride.findById(rideId);
+      if (!freshRide) {
+        return res.status(404).json({ success: false, message: 'Ride not found' });
+      }
+
+      const freshSeatsLeft = Math.max(0, freshRide.availableSeats - freshRide.seatsBooked);
+      if (seatsRequested > freshSeatsLeft) {
+        return res.status(400).json({ success: false, message: `Only ${freshSeatsLeft} seat(s) left` });
+      }
+
+      return res.status(409).json({ success: false, message: 'Booking request could not be completed. Please try again.' });
+    }
 
     return res.status(201).json({
       success: true,
       message: 'Ride booked successfully',
+      requestId: req.requestId,
       data: {
-        ride,
+        ride: updatedRide,
         seats: seatsRequested,
       },
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: 'Failed to book ride', requestId: req.requestId });
   }
 };
 
@@ -85,15 +117,18 @@ export const getMyBookings = async (req, res) => {
             driver: ride.driver,
             pricePerSeat: ride.pricePerSeat,
             rideStatus: ride.rideStatus,
-            pickupCode: p.status === 'accepted' ? ride.pickupCodePlain : null,
+            pickupCode:
+              p.status === 'accepted' && !ride.pickupVerified && ride.pickupCodeExpiry > new Date()
+                ? decryptCode(ride.pickupCodeEncrypted)
+                : null,
             pickupVerified: ride.pickupVerified,
           });
         });
     });
 
-    return res.status(200).json({ success: true, data: { bookings } });
+    return res.status(200).json({ success: true, data: { bookings }, requestId: req.requestId });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: 'Failed to fetch bookings', requestId: req.requestId });
   }
 };
 
@@ -114,6 +149,8 @@ export const getMyBookingsAsDriver = async (req, res) => {
       endLocation: ride.endLocation,
       departureTime: ride.departureTime,
       rideStatus: ride.rideStatus,
+      completedByDriver: ride.completedByDriver,
+      driverCompletedAt: ride.driverCompletedAt,
       pricePerSeat: ride.pricePerSeat,
       driver: ride.driver,
       pickupVerified: ride.pickupVerified,
@@ -129,9 +166,9 @@ export const getMyBookingsAsDriver = async (req, res) => {
       })),
     }));
 
-    return res.status(200).json({ success: true, data: { bookings: driverBookings } });
+    return res.status(200).json({ success: true, data: { bookings: driverBookings }, requestId: req.requestId });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: 'Failed to fetch driver bookings', requestId: req.requestId });
   }
 };
 
@@ -157,9 +194,9 @@ export const cancelBooking = async (req, res) => {
     ride.passengers.splice(passengerIndex, 1);
     await ride.save();
 
-    return res.status(200).json({ success: true, message: 'Booking cancelled' });
+    return res.status(200).json({ success: true, message: 'Booking cancelled', requestId: req.requestId });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: 'Failed to cancel booking', requestId: req.requestId });
   }
 };
 
@@ -179,9 +216,10 @@ export const acceptBooking = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Only the driver can accept bookings' });
     }
 
-    const passengerIndex = ride.passengers.findIndex(
-      (p) => p.userId._id.toString() === passengerId
-    );
+    const passengerIndex = ride.passengers.findIndex((p) => {
+      const passengerObjectId = p.userId?._id ? p.userId._id : p.userId;
+      return passengerObjectId?.toString() === passengerId;
+    });
 
     if (passengerIndex === -1) {
       return res.status(404).json({ success: false, message: 'Passenger not found in this ride' });
@@ -196,7 +234,7 @@ export const acceptBooking = async (req, res) => {
     const codeHash = await bcrypt.hash(rideCode, 10);
     
     ride.passengers[passengerIndex].status = 'accepted';
-    ride.pickupCodePlain = rideCode; // Store plain for passenger to see
+    ride.pickupCodeEncrypted = encryptCode(rideCode);
     ride.pickupCodeHash = codeHash;
     ride.pickupCodeExpiry = new Date(Date.now() + 30 * 60 * 1000); // 30 min expiry
     ride.pickupVerified = false;
@@ -206,13 +244,14 @@ export const acceptBooking = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: 'Booking accepted successfully',
+      requestId: req.requestId,
       data: {
         rideCode, // Send to frontend to show passenger
         ride,
       },
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: 'Failed to accept booking', requestId: req.requestId });
   }
 };
 
@@ -232,9 +271,7 @@ export const rejectBooking = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Only the driver can reject bookings' });
     }
 
-    const passengerIndex = ride.passengers.findIndex(
-      (p) => p.userId.toString() === passengerId
-    );
+    const passengerIndex = ride.passengers.findIndex((p) => p.userId?.toString() === passengerId);
 
     if (passengerIndex === -1) {
       return res.status(404).json({ success: false, message: 'Passenger not found in this ride' });
@@ -249,9 +286,10 @@ export const rejectBooking = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: 'Booking rejected',
+      requestId: req.requestId,
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: 'Failed to reject booking', requestId: req.requestId });
   }
 };
 
@@ -296,24 +334,29 @@ export const verifyPickupCode = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid ride code' });
     }
 
+    if (!canTransitionRideStatus(ride.rideStatus, 'in_progress')) {
+      return res.status(400).json({ success: false, message: `Cannot start ride from status '${ride.rideStatus}'` });
+    }
+
     // Mark as verified and start ride
     ride.pickupVerified = true;
     ride.rideStatus = 'in_progress';
     ride.pickupCodeHash = null; // Invalidate after use
-    ride.pickupCodePlain = null;
+    ride.pickupCodeEncrypted = null;
     
     await ride.save();
 
     return res.status(200).json({
       success: true,
       message: 'Pickup verified! Ride started.',
+      requestId: req.requestId,
       data: {
         rideStatus: ride.rideStatus,
         pickupVerified: true,
       },
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: 'Failed to verify pickup code', requestId: req.requestId });
   }
 };
 
@@ -333,13 +376,21 @@ export const markCompletedByDriver = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Only the driver can mark the ride as completed' });
     }
 
+    if (!['in_progress', 'payment_pending'].includes(ride.rideStatus)) {
+      return res.status(400).json({ success: false, message: `Cannot complete ride from status '${ride.rideStatus}'` });
+    }
+
     ride.completedByDriver = true;
+    ride.driverCompletedAt = new Date();
     
     // Check if ALL passengers have also marked as completed
     const allPassengersCompleted = ride.passengers.every(p => p.completedByPassenger === true);
     
     if (allPassengersCompleted && ride.passengers.length > 0) {
       // Both driver and all passengers are done → trigger payment
+      if (!canTransitionRideStatus(ride.rideStatus, 'payment_pending')) {
+        return res.status(400).json({ success: false, message: `Cannot transition ride to payment pending from '${ride.rideStatus}'` });
+      }
       ride.rideStatus = 'payment_pending';
     }
     
@@ -350,6 +401,7 @@ export const markCompletedByDriver = async (req, res) => {
       message: ride.rideStatus === 'payment_pending' 
         ? 'Ride completed! Payment pending.' 
         : 'Marked as completed by driver. Waiting for passengers.',
+      requestId: req.requestId,
       data: { 
         completedByDriver: true,
         rideStatus: ride.rideStatus,
@@ -357,7 +409,76 @@ export const markCompletedByDriver = async (req, res) => {
       }
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: 'Failed to mark driver completion', requestId: req.requestId });
+  }
+};
+
+// Force-complete ride by driver after passenger timeout
+export const forceCompleteByDriver = async (req, res) => {
+  try {
+    const rideId = req.params.id;
+    const userId = new ObjectId(req.userId);
+    const timeoutMinutes = Number(process.env.PASSENGER_COMPLETE_TIMEOUT_MINUTES || 30);
+
+    const ride = await Ride.findById(rideId);
+
+    if (!ride) {
+      return res.status(404).json({ success: false, message: 'Ride not found' });
+    }
+
+    if (ride.driver.toString() !== userId.toString()) {
+      return res.status(403).json({ success: false, message: 'Only the driver can force-complete the ride' });
+    }
+
+    if (ride.rideStatus !== 'in_progress') {
+      return res.status(400).json({ success: false, message: `Force complete is only allowed from status 'in_progress'` });
+    }
+
+    if (!ride.completedByDriver || !ride.driverCompletedAt) {
+      return res.status(400).json({
+        success: false,
+        message: 'Driver must mark ride complete first before force-completing',
+      });
+    }
+
+    const elapsedMs = Date.now() - new Date(ride.driverCompletedAt).getTime();
+    const requiredMs = timeoutMinutes * 60 * 1000;
+
+    if (elapsedMs < requiredMs) {
+      const minutesLeft = Math.ceil((requiredMs - elapsedMs) / (60 * 1000));
+      return res.status(400).json({
+        success: false,
+        message: `Please wait ${minutesLeft} more minute(s) before force-completing`,
+      });
+    }
+
+    // Any accepted passenger who has not confirmed completion is auto-completed after timeout.
+    ride.passengers = ride.passengers.map((p) => {
+      if (p.status === 'accepted' && !p.completedByPassenger) {
+        p.completedByPassenger = true;
+        p.status = 'completed';
+      }
+      return p;
+    });
+
+    if (!canTransitionRideStatus(ride.rideStatus, 'payment_pending')) {
+      return res.status(400).json({ success: false, message: `Cannot transition ride to payment pending from '${ride.rideStatus}'` });
+    }
+
+    ride.rideStatus = 'payment_pending';
+    await ride.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Ride force-completed. Payment is now pending.',
+      requestId: req.requestId,
+      data: {
+        rideStatus: ride.rideStatus,
+        paymentPending: true,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to force-complete ride', requestId: req.requestId });
   }
 };
 
@@ -378,13 +499,21 @@ export const markCompletedByPassenger = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Booking not found for this user' });
     }
 
+    if (!['in_progress', 'payment_pending'].includes(ride.rideStatus)) {
+      return res.status(400).json({ success: false, message: `Cannot complete ride from status '${ride.rideStatus}'` });
+    }
+
     ride.passengers[passengerIndex].completedByPassenger = true;
+    ride.passengers[passengerIndex].status = 'completed';
     
     // Check if driver has also marked as completed AND all passengers are done
     const allPassengersCompleted = ride.passengers.every(p => p.completedByPassenger === true);
     
     if (ride.completedByDriver && allPassengersCompleted) {
       // Both driver and all passengers are done → trigger payment
+      if (!canTransitionRideStatus(ride.rideStatus, 'payment_pending')) {
+        return res.status(400).json({ success: false, message: `Cannot transition ride to payment pending from '${ride.rideStatus}'` });
+      }
       ride.rideStatus = 'payment_pending';
     }
     
@@ -395,6 +524,7 @@ export const markCompletedByPassenger = async (req, res) => {
       message: ride.rideStatus === 'payment_pending'
         ? 'Ride completed! Please proceed to payment.'
         : 'Marked as completed by passenger. Waiting for driver.',
+      requestId: req.requestId,
       data: { 
         completedByPassenger: true,
         rideStatus: ride.rideStatus,
@@ -402,6 +532,6 @@ export const markCompletedByPassenger = async (req, res) => {
       }
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: 'Failed to mark passenger completion', requestId: req.requestId });
   }
 };

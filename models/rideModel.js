@@ -67,6 +67,19 @@ const rideSchema = new mongoose.Schema(
       },
       interiorPhoto: String,
     },
+    fareBreakdown: {
+      baseFare: { type: Number, default: 0 },
+      distanceFare: { type: Number, default: 0 },
+      timeFare: { type: Number, default: 0 },
+      surgeMultiplier: { type: Number, default: 1 },
+      platformFee: { type: Number, default: 0 },
+      tollCharges: { type: Number, default: 0 },
+      totalFare: { type: Number, default: 0 },
+    },
+    paymentCountdown: {
+      type: Number, // Seconds remaining
+      default: 0,
+    },
     description: {
       type: String,
       maxlength: 500,
@@ -110,6 +123,9 @@ const rideSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    driverCompletedAt: {
+      type: Date,
+    },
     seatsBooked: {
       type: Number,
       default: 0,
@@ -117,7 +133,7 @@ const rideSchema = new mongoose.Schema(
     pickupCodeHash: {
       type: String,
     },
-    pickupCodePlain: {
+    pickupCodeEncrypted: {
       type: String,
     },
     pickupCodeExpiry: {

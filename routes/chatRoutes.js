@@ -8,6 +8,9 @@ import {
   deleteChat,
   getUnreadCount,
 } from '../controllers/chatController.js';
+import { validateObjectIdParam } from '../middleware/validateObjectId.js';
+import { validateRequest } from '../middleware/validateRequest.js';
+import { sendMessageSchema } from '../validation/schemas.js';
 
 const router = express.Router();
 
@@ -18,15 +21,15 @@ router.get('/me', authMiddleware, getChats);
 router.get('/unread', authMiddleware, getUnreadCount);
 
 // Get messages in a chat (protected)
-router.get('/:chatId', authMiddleware, getMessages);
+router.get('/:chatId', authMiddleware, validateObjectIdParam('chatId'), getMessages);
 
 // Send message (protected)
-router.post('/', authMiddleware, sendMessage);
+router.post('/', authMiddleware, validateRequest(sendMessageSchema), sendMessage);
 
 // Mark message as read (protected)
-router.put('/:messageId/read', authMiddleware, markAsRead);
+router.put('/:messageId/read', authMiddleware, validateObjectIdParam('messageId'), markAsRead);
 
 // Delete chat (protected)
-router.delete('/:chatId', authMiddleware, deleteChat);
+router.delete('/:chatId', authMiddleware, validateObjectIdParam('chatId'), deleteChat);
 
 export default router;

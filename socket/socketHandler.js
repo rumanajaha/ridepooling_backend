@@ -3,6 +3,9 @@ import jwt from 'jsonwebtoken';
 import locationService from '../services/locationService.js';
 import { calculateDistance, calculateETA, calculateBearing } from '../utils/haversine.js';
 import Ride from '../models/rideModel.js';
+import User from '../models/userModel.js';
+import logger from '../utils/logger.js';
+import notifyEmergencyChannels from '../services/emergencyNotifier.js';
 
 const connectedUsers = new Map(); // socketId -> { userId, rideId, role }
 let ioInstance = null; // Store global io instance for external use
@@ -35,17 +38,28 @@ export function initializeSocket(server) {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       socket.userId = decoded.userId;
       socket.userName = decoded.name || 'User';
+      socket.tokenExpAt = decoded.exp ? decoded.exp * 1000 : null;
       
-      console.log(`🔌 User ${socket.userId} authenticating...`);
+      logger.info('Socket user authenticating', { userId: socket.userId });
       next();
     } catch (error) {
-      console.error('Socket authentication error:', error.message);
+      logger.error('Socket authentication error', { error: error.message });
       next(new Error('Invalid authentication token'));
     }
   });
 
   io.on('connection', (socket) => {
-    console.log(`✅ User connected: ${socket.userId} (${socket.id})`);
+    logger.info('Socket user connected', { userId: socket.userId, socketId: socket.id });
+    socket.join(`user:${socket.userId}`);
+
+    const expiryCheckInterval = setInterval(() => {
+      if (!socket.tokenExpAt) return;
+
+      if (Date.now() >= socket.tokenExpAt) {
+        socket.emit('auth-expired', { message: 'Session expired. Please login again.' });
+        socket.disconnect(true);
+      }
+    }, 60 * 1000);
 
     // User joins a specific ride room
     socket.on('join-ride', async ({ rideId, role }) => {
@@ -75,7 +89,12 @@ export function initializeSocket(server) {
           userName: socket.userName
         });
 
-        console.log(`👤 ${socket.userName} joined ride ${rideId} as ${isDriver ? 'driver' : 'passenger'}`);
+        logger.info('User joined ride room', {
+          userId: socket.userId,
+          userName: socket.userName,
+          rideId,
+          role: isDriver ? 'driver' : 'passenger',
+        });
 
         // Send current location if available
         const currentLocation = await locationService.getRiderLocation(rideId);
@@ -91,7 +110,7 @@ export function initializeSocket(server) {
         });
 
       } catch (error) {
-        console.error('Error joining ride:', error);
+        logger.error('Error joining ride room', { error: error.message, userId: socket.userId });
         socket.emit('error', { message: 'Failed to join ride' });
       }
     });
@@ -155,7 +174,7 @@ export function initializeSocket(server) {
         });
 
       } catch (error) {
-        console.error('Error updating location:', error);
+        logger.error('Error updating driver location', { error: error.message, userId: socket.userId });
       }
     });
 
@@ -191,7 +210,96 @@ export function initializeSocket(server) {
         socket.to(`ride:${rideId}`).emit('passenger-location-update', passengerLocationData);
 
       } catch (error) {
-        console.error('Error updating passenger location:', error);
+        logger.error('Error updating passenger location', { error: error.message, userId: socket.userId });
+      }
+    });
+
+    // Handle Ride Status: Driver drops passenger
+    socket.on('ride-dropped', async ({ rideId }) => {
+      try {
+        io.to(`ride:${rideId}`).emit('ride-status-update', {
+          status: 'dropped',
+          message: 'Driver has dropped off the passenger',
+        });
+        logger.info('Ride dropped off', { rideId });
+      } catch (error) {
+        logger.error('Error in ride-dropped:', { error: error.message });
+      }
+    });
+
+    // Handle Ride Status: Passenger confirms reaching
+    socket.on('ride-reached', async ({ rideId }) => {
+      try {
+        io.to(`ride:${rideId}`).emit('ride-status-update', {
+          status: 'reached',
+          message: 'Passenger confirmed reaching the destination',
+        });
+        logger.info('Ride reached destination', { rideId });
+      } catch (error) {
+        logger.error('Error in ride-reached:', { error: error.message });
+      }
+    });
+
+    // Handle SOS Alert
+    socket.on('send-sos', async ({ rideId, location }) => {
+      try {
+        const senderUser = await User.findById(socket.userId).select('name phone trustedContacts');
+        const adminEmails = (process.env.ADMIN_EMAILS || '')
+          .split(',')
+          .map((e) => e.trim().toLowerCase())
+          .filter(Boolean);
+        const adminUsers = adminEmails.length
+          ? await User.find({ email: { $in: adminEmails } }).select('_id email name phone')
+          : [];
+
+        const sosAlert = {
+          userId: socket.userId,
+          userName: socket.userName,
+          rideId,
+          location,
+          timestamp: Date.now(),
+          type: 'SOS_EMERGENCY',
+          trustedContacts: senderUser?.trustedContacts || [],
+        };
+
+        // Broadcast to everyone in the ride room
+        io.to(`ride:${rideId}`).emit('emergency-alert', sosAlert);
+
+        // Notify connected admins in their user rooms for dashboard escalation.
+        adminUsers.forEach((adminUser) => {
+          io.to(`user:${adminUser._id.toString()}`).emit('admin-emergency-alert', {
+            ...sosAlert,
+            adminId: adminUser._id.toString(),
+          });
+        });
+
+        // Expose trusted contacts payload for downstream notification workers/integrations.
+        io.to(`ride:${rideId}`).emit('trusted-contact-alert', {
+          rideId,
+          contacts: senderUser?.trustedContacts || [],
+          sender: {
+            userId: socket.userId,
+            name: socket.userName,
+            phone: senderUser?.phone || null,
+          },
+          location,
+          timestamp: Date.now(),
+        });
+
+        const notifyResult = await notifyEmergencyChannels({
+          sosAlert,
+          adminUsers,
+        });
+
+        io.to(`ride:${rideId}`).emit('emergency-notification-status', {
+          rideId,
+          deliveredChannels: notifyResult.deliveredChannels,
+          timestamp: Date.now(),
+        });
+        
+        logger.warn('SOS ALERT RECEIVED', { ...sosAlert });
+      } catch (error) {
+        logger.error('Error in send-sos:', { error: error.message });
       }
     });
 
@@ -218,7 +326,7 @@ export function initializeSocket(server) {
         io.to(`ride:${rideId}`).emit('receive-message', messageData);
 
       } catch (error) {
-        console.error('Error sending message:', error);
+        logger.error('Error sending socket message', { error: error.message, userId: socket.userId });
       }
     });
 
@@ -265,15 +373,25 @@ export function initializeSocket(server) {
 
         // Clear Redis data
         await locationService.clearRideData(rideId);
+
+        // Prevent room leaks after completion
+        socket.leave(`ride:${rideId}`);
+        connectedUsers.delete(socket.id);
       }
     });
 
     // Disconnect
     socket.on('disconnect', () => {
+      clearInterval(expiryCheckInterval);
+
       const userInfo = connectedUsers.get(socket.id);
       
       if (userInfo) {
-        console.log(`❌ ${userInfo.userName} disconnected from ride ${userInfo.rideId}`);
+        logger.info('Socket user disconnected', {
+          userId: userInfo.userId,
+          userName: userInfo.userName,
+          rideId: userInfo.rideId,
+        });
         
         socket.to(`ride:${userInfo.rideId}`).emit('user-left', {
           userId: userInfo.userId,
@@ -286,11 +404,11 @@ export function initializeSocket(server) {
 
     // Error handling
     socket.on('error', (error) => {
-      console.error('Socket error:', error);
+      logger.error('Socket runtime error', { error: error?.message || String(error), userId: socket.userId });
     });
   });
 
-  console.log('🚀 Socket.IO initialized for live tracking');
+  logger.info('Socket.IO initialized for live tracking');
   return io;
 }
 

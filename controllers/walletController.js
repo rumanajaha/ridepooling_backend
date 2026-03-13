@@ -1,5 +1,6 @@
 import Wallet from '../models/walletModel.js';
 import Ride from '../models/rideModel.js';
+import logger from '../utils/logger.js';
 
 // Get user's wallet
 export const getWallet = async (req, res) => {
@@ -16,9 +17,10 @@ export const getWallet = async (req, res) => {
       data: { wallet },
     });
   } catch (error) {
+    logger.error('Failed to fetch wallet', { userId: req.userId, error: error.message });
     return res.status(500).json({
       success: false,
-      message: error.message,
+      message: 'Failed to fetch wallet',
     });
   }
 };
@@ -37,9 +39,10 @@ export const getBalance = async (req, res) => {
       data: { balance: wallet.balance },
     });
   } catch (error) {
+    logger.error('Failed to fetch wallet balance', { userId: req.userId, error: error.message });
     return res.status(500).json({
       success: false,
-      message: error.message,
+      message: 'Failed to fetch wallet balance',
     });
   }
 };
@@ -47,7 +50,9 @@ export const getBalance = async (req, res) => {
 // Get transaction history
 export const getTransactionHistory = async (req, res) => {
   try {
-    const { limit = 50, skip = 0, type } = req.query;
+    const limit = req.query.limit ?? 50;
+    const skip = req.query.skip ?? 0;
+    const { type } = req.query;
     
     let wallet = await Wallet.findOne({ userId: req.userId })
       .populate('transactions.rideId', 'startLocation endLocation departureTime')
@@ -67,7 +72,7 @@ export const getTransactionHistory = async (req, res) => {
     // Sort by date (newest first) and apply pagination
     transactions = transactions
       .sort((a, b) => b.transactionDate - a.transactionDate)
-      .slice(parseInt(skip), parseInt(skip) + parseInt(limit));
+      .slice(skip, skip + limit);
 
     return res.status(200).json({
       success: true,
@@ -78,9 +83,10 @@ export const getTransactionHistory = async (req, res) => {
       },
     });
   } catch (error) {
+    logger.error('Failed to fetch wallet transactions', { userId: req.userId, error: error.message });
     return res.status(500).json({
       success: false,
-      message: error.message,
+      message: 'Failed to fetch transaction history',
     });
   }
 };
@@ -182,9 +188,14 @@ export const processRidePayment = async (req, res) => {
       },
     });
   } catch (error) {
+    logger.error('Failed to process ride payment', {
+      userId: req.userId,
+      rideId: req.params.rideId,
+      error: error.message,
+    });
     return res.status(500).json({
       success: false,
-      message: error.message,
+      message: 'Failed to process payment',
     });
   }
 };
@@ -192,14 +203,7 @@ export const processRidePayment = async (req, res) => {
 // Add funds to wallet (for testing/top-up)
 export const addFunds = async (req, res) => {
   try {
-    const { amount } = req.body;
-
-    if (!amount || amount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid amount',
-      });
-    }
+    const amount = req.body.amount;
 
     let wallet = await Wallet.findOne({ userId: req.userId });
     if (!wallet) {
@@ -219,9 +223,10 @@ export const addFunds = async (req, res) => {
       data: { balance: wallet.balance },
     });
   } catch (error) {
+    logger.error('Failed to add wallet funds', { userId: req.userId, error: error.message });
     return res.status(500).json({
       success: false,
-      message: error.message,
+      message: 'Failed to add funds',
     });
   }
 };
