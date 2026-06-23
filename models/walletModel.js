@@ -68,7 +68,7 @@ walletSchema.statics.createWallet = async function (userId) {
 };
 
 // Add credit (earning)
-walletSchema.methods.addCredit = async function (amount, description, rideId, relatedUserId) {
+walletSchema.methods.addCredit = async function (amount, description, rideId, relatedUserId, session = null) {
   this.balance += amount;
   this.transactions.push({
     type: 'credit',
@@ -78,12 +78,16 @@ walletSchema.methods.addCredit = async function (amount, description, rideId, re
     relatedUserId,
     status: 'completed',
   });
-  await this.save();
+  if (session) {
+    await this.save({ session });
+  } else {
+    await this.save();
+  }
   return this;
 };
 
 // Deduct amount (payment)
-walletSchema.methods.deductAmount = async function (amount, description, rideId, relatedUserId) {
+walletSchema.methods.deductAmount = async function (amount, description, rideId, relatedUserId, session = null) {
   if (this.balance < amount) {
     throw new Error('Insufficient balance');
   }
@@ -96,7 +100,11 @@ walletSchema.methods.deductAmount = async function (amount, description, rideId,
     relatedUserId,
     status: 'completed',
   });
-  await this.save();
+  if (session) {
+    await this.save({ session });
+  } else {
+    await this.save();
+  }
   return this;
 };
 

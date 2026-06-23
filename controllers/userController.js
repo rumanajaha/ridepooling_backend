@@ -1,4 +1,5 @@
 import User from '../models/userModel.js';
+import Ride from '../models/rideModel.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
@@ -14,9 +15,6 @@ const sanitizeUser = (userDoc) => {
     profileImage: user.profileImage || null,
     rating: user.rating,
     isVerified: user.isVerified,
-    kycStatus: user.kycStatus,
-    kycRejectionReason: user.kycRejectionReason || '',
-    kycDocuments: user.kycDocuments || {},
     upiId: user.upiId || null,
     vehicles: user.vehicles || [],
     trustedContacts: user.trustedContacts || [],
@@ -195,6 +193,7 @@ export const changePassword = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     user.password = hashedPassword;
+    user.passwordChangedAt = Date.now();
     await user.save();
 
     res.status(200).json({ success: true, message: 'Password updated successfully' });
@@ -203,94 +202,30 @@ export const changePassword = async (req, res) => {
   }
 };
 
-// Upload KYC documents
-export const uploadKYC = async (req, res) => {
+// Get system stats for landing page
+export const getSystemStats = async (req, res) => {
   try {
-    if (!req.files || Object.keys(req.files).length === 0) {
-      return res.status(400).json({ success: false, message: 'No files uploaded' });
-    }
+    const totalUsers = await User.countDocuments();
+    const completedRides = await Ride.countDocuments({ rideStatus: 'completed' });
+    const citiesList = await User.distinct('city');
+    const totalCities = citiesList.length || 1;
 
-    const user = await User.findById(req.userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
-    }
-
-    const docs = user.kycDocuments || {};
-
-    if (req.files.licensePhoto) docs.licensePhoto = req.files.licensePhoto[0].path;
-    if (req.files.idPhoto) docs.idPhoto = req.files.idPhoto[0].path;
-    if (req.files.vehiclePhoto) docs.vehiclePhoto = req.files.vehiclePhoto[0].path;
-    if (req.files.platePhoto) docs.platePhoto = req.files.platePhoto[0].path;
-
-    user.kycDocuments = docs;
-    user.kycStatus = 'pending'; // Reset to pending if documents are updated
-    await user.save();
+    // Dynamic HSL calculated carbon saved
+    const co2Saved = completedRides * 12; // average 12kg saved per pooled ride stop
 
     res.status(200).json({
       success: true,
-      message: 'KYC documents uploaded successfully',
       data: {
-        kycStatus: user.kycStatus,
-        kycDocuments: user.kycDocuments
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// Verify user KYC (admin only)
-export const verifyUserKYC = async (req, res) => {
-  try {
-    const { userId, status = 'verified', reason = '' } = req.body;
-
-    if (!userId) {
-      return res.status(400).json({ success: false, message: 'userId is required' });
-    }
-
-    if (!['verified', 'rejected', 'pending'].includes(status)) {
-      return res.status(400).json({ success: false, message: 'Invalid status. Use verified, rejected, or pending' });
-    }
-
-    const requester = await User.findById(req.userId).select('email');
-    if (!requester) {
-      return res.status(404).json({ success: false, message: 'Requester not found' });
-    }
-
-    const adminEmails = (process.env.ADMIN_EMAILS || '')
-      .split(',')
-      .map((e) => e.trim().toLowerCase())
-      .filter(Boolean);
-
-    const isAdmin = adminEmails.length > 0
-      ? adminEmails.includes(String(requester.email || '').toLowerCase())
-      : process.env.NODE_ENV !== 'production';
-
-    if (!isAdmin) {
-      return res.status(403).json({ success: false, message: 'Only admin can verify KYC' });
-    }
-
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).json({ success: false, message: 'Target user not found' });
-    }
-
-    user.kycStatus = status;
-    user.isVerified = status === 'verified';
-    user.kycRejectionReason = status === 'rejected' ? reason : '';
-    await user.save();
-
-    return res.status(200).json({
-      success: true,
-      message: `KYC ${status} successfully`,
-      data: {
-        userId: user._id,
-        kycStatus: user.kycStatus,
-        isVerified: user.isVerified,
+        totalUsers,
+        completedRides,
+        totalCities,
+        co2Saved,
       },
-      requestId: req.requestId,
     });
   } catch (error) {
-    return res.status(500).json({ success: false, message: 'Failed to verify KYC', requestId: req.requestId });
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to fetch statistics',
+    });
   }
 };

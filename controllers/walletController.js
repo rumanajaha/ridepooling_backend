@@ -1,6 +1,7 @@
 import Wallet from '../models/walletModel.js';
 import Ride from '../models/rideModel.js';
 import logger from '../utils/logger.js';
+import mongoose from 'mongoose';
 
 // Get user's wallet
 export const getWallet = async (req, res) => {
@@ -93,13 +94,19 @@ export const getTransactionHistory = async (req, res) => {
 
 // Process payment for ride (called after both driver and passenger mark as done)
 export const processRidePayment = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
+    session.startTransaction();
     const { rideId } = req.params;
+    
     const ride = await Ride.findById(rideId)
       .populate('driver', 'name email')
-      .populate('passengers.userId', 'name email');
+      .populate('passengers.userId', 'name email')
+      .session(session);
 
     if (!ride) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({
         success: false,
         message: 'Ride not found',
@@ -108,6 +115,8 @@ export const processRidePayment = async (req, res) => {
 
     // Check if ride is in payment_pending status
     if (ride.rideStatus !== 'payment_pending') {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: 'Ride is not ready for payment',
@@ -117,6 +126,8 @@ export const processRidePayment = async (req, res) => {
     // Find the passenger (must be the one making payment)
     const passenger = ride.passengers.find(p => p.userId._id.toString() === req.userId);
     if (!passenger) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(403).json({
         success: false,
         message: 'You are not a passenger on this ride',
@@ -125,6 +136,8 @@ export const processRidePayment = async (req, res) => {
 
     // Check if already paid
     if (passenger.paymentStatus === 'paid') {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: 'Payment already completed',
@@ -135,26 +148,28 @@ export const processRidePayment = async (req, res) => {
     const paymentAmount = ride.pricePerSeat * passenger.bookedSeats;
 
     // Get/create passenger wallet
-    let passengerWallet = await Wallet.findOne({ userId: req.userId });
+    let passengerWallet = await Wallet.findOne({ userId: req.userId }).session(session);
     if (!passengerWallet) {
       passengerWallet = await Wallet.createWallet(req.userId);
+      // Re-fetch passenger wallet to attach it to session if newly created
+      passengerWallet = await Wallet.findOne({ userId: req.userId }).session(session);
     }
 
     // Get/create driver wallet
-    let driverWallet = await Wallet.findOne({ userId: ride.driver._id });
+    let driverWallet = await Wallet.findOne({ userId: ride.driver._id }).session(session);
     if (!driverWallet) {
       driverWallet = await Wallet.createWallet(ride.driver._id);
+      // Re-fetch driver wallet to attach it to session if newly created
+      driverWallet = await Wallet.findOne({ userId: ride.driver._id }).session(session);
     }
 
-    // In real implementation, this would integrate with Razorpay
-    // For now, we'll simulate the payment flow
-    
     // Deduct from passenger (they paid via UPI to platform)
     await passengerWallet.deductAmount(
       paymentAmount,
       `Payment for ride from ${ride.startLocation.address} to ${ride.endLocation.address}`,
       rideId,
-      ride.driver._id
+      ride.driver._id,
+      session
     );
 
     // Credit to driver (platform pays driver)
@@ -162,7 +177,8 @@ export const processRidePayment = async (req, res) => {
       paymentAmount,
       `Earnings from ride to ${ride.endLocation.address}`,
       rideId,
-      req.userId
+      req.userId,
+      session
     );
 
     // Update passenger payment status
@@ -176,7 +192,10 @@ export const processRidePayment = async (req, res) => {
       ride.rideStatus = 'completed';
     }
 
-    await ride.save();
+    await ride.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       success: true,
@@ -188,6 +207,8 @@ export const processRidePayment = async (req, res) => {
       },
     });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     logger.error('Failed to process ride payment', {
       userId: req.userId,
       rideId: req.params.rideId,
@@ -195,7 +216,7 @@ export const processRidePayment = async (req, res) => {
     });
     return res.status(500).json({
       success: false,
-      message: 'Failed to process payment',
+      message: 'Failed to process payment: ' + error.message,
     });
   }
 };

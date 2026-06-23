@@ -56,7 +56,7 @@ app.get('/', (req, res) => {
 });
 
 // API routes
-app.use('/api/auth', userRoutes);
+app.use('/api/auth', authLimiter, userRoutes);
 app.use('/api/rides', writeLimiter, rideRoutes);
 app.use('/api/bookings', writeLimiter, bookingRoutes);
 app.use('/api/reviews', reviewRoutes);
@@ -71,7 +71,9 @@ app.use(errorHandler);
 initializeSocket(httpServer);
 
 const BASE_PORT = Number(process.env.PORT || 5003);
-const MAX_PORT_RETRIES = Number(process.env.PORT_RETRY_COUNT || 5);
+const MAX_PORT_RETRIES = process.env.PORT_STRICT === 'true' || process.env.NODE_ENV === 'production'
+  ? 0
+  : Number(process.env.PORT_RETRY_COUNT || 5);
 
 const tryListen = (port) =>
   new Promise((resolve, reject) => {

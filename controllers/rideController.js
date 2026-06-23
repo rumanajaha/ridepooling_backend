@@ -71,22 +71,27 @@ export const createRide = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Driver not found' });
     }
 
-    // KYC Verification Check
-    if (user.kycStatus !== 'verified') {
-      return res.status(403).json({
-        success: false,
-        message: 'Your account is not KYC verified. Please upload documents and wait for approval before offering rides.',
-        kycStatus: user.kycStatus
-      });
-    }
+    // KYC check removed
 
     // Generate Fare Estimate
     const fareEstimate = await getRouteEstimate(startLocation, endLocation);
 
     const newRide = new Ride({
       driver: req.userId,
-      startLocation,
-      endLocation,
+      startLocation: {
+        ...startLocation,
+        coordinates: {
+          type: 'Point',
+          coordinates: [Number(startLocation.longitude), Number(startLocation.latitude)],
+        },
+      },
+      endLocation: {
+        ...endLocation,
+        coordinates: {
+          type: 'Point',
+          coordinates: [Number(endLocation.longitude), Number(endLocation.latitude)],
+        },
+      },
       departureTime, // Using the original departureTime directly
       availableSeats: effectiveSeats,
       pricePerSeat: effectivePrice > 0 ? effectivePrice : fareEstimate.totalFare,
@@ -133,6 +138,8 @@ export const getAllRides = async (req, res) => {
       latitude,
       longitude,
       maxDistanceKm,
+      destLatitude,
+      destLongitude,
     } = req.query;
 
     // CORE RULE: Always start with active rides and future departures
@@ -169,24 +176,39 @@ export const getAllRides = async (req, res) => {
       filter.pricePerSeat = { $lte: parseInt(maxPrice) };
     }
 
-    let rides = await Ride.find(filter)
-      .populate('driver', 'name city rating profileImage')
-      .sort({ departureTime: 1 });
-
     if (latitude && longitude) {
       const lat = Number(latitude);
       const lng = Number(longitude);
       const maxKm = Number(maxDistanceKm || 25);
 
       if (Number.isFinite(lat) && Number.isFinite(lng) && Number.isFinite(maxKm)) {
-        rides = rides.filter((ride) => {
-          const rideLat = Number(ride.startLocation?.latitude);
-          const rideLng = Number(ride.startLocation?.longitude);
-          if (!Number.isFinite(rideLat) || !Number.isFinite(rideLng)) return false;
-          return calculateDistance(lat, lng, rideLat, rideLng) <= maxKm;
-        });
+        const radiusInRadians = maxKm / 6378.1;
+        filter['startLocation.coordinates'] = {
+          $geoWithin: {
+            $centerSphere: [[lng, lat], radiusInRadians],
+          },
+        };
       }
     }
+
+    if (destLatitude && destLongitude) {
+      const destLat = Number(destLatitude);
+      const destLng = Number(destLongitude);
+      const maxKm = Number(maxDistanceKm || 25);
+
+      if (Number.isFinite(destLat) && Number.isFinite(destLng) && Number.isFinite(maxKm)) {
+        const radiusInRadians = maxKm / 6378.1;
+        filter['endLocation.coordinates'] = {
+          $geoWithin: {
+            $centerSphere: [[destLng, destLat], radiusInRadians],
+          },
+        };
+      }
+    }
+
+    let rides = await Ride.find(filter)
+      .populate('driver', 'name city rating profileImage')
+      .sort({ departureTime: 1 });
 
     res.status(200).json({
       success: true,
@@ -434,25 +456,25 @@ export const searchRides = async (req, res) => {
       filter.pricePerSeat = { $lte: parseInt(maxPrice) };
     }
 
-    let rides = await Ride.find(filter)
-      .populate('driver', 'name city rating profileImage')
-      .sort({ pricePerSeat: 1, departureTime: 1 })
-      .limit(20);
-
     if (latitude && longitude) {
       const lat = Number(latitude);
       const lng = Number(longitude);
       const maxKm = Number(maxDistanceKm || 25);
 
       if (Number.isFinite(lat) && Number.isFinite(lng) && Number.isFinite(maxKm)) {
-        rides = rides.filter((ride) => {
-          const rideLat = Number(ride.startLocation?.latitude);
-          const rideLng = Number(ride.startLocation?.longitude);
-          if (!Number.isFinite(rideLat) || !Number.isFinite(rideLng)) return false;
-          return calculateDistance(lat, lng, rideLat, rideLng) <= maxKm;
-        });
+        const radiusInRadians = maxKm / 6378.1;
+        filter['startLocation.coordinates'] = {
+          $geoWithin: {
+            $centerSphere: [[lng, lat], radiusInRadians],
+          },
+        };
       }
     }
+
+    let rides = await Ride.find(filter)
+      .populate('driver', 'name city rating profileImage')
+      .sort({ pricePerSeat: 1, departureTime: 1 })
+      .limit(20);
 
     res.status(200).json({
       success: true,

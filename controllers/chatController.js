@@ -1,5 +1,7 @@
 import Chat from '../models/chatModel.js';
 import Message from '../models/messageModel.js';
+import { getIO } from '../socket/socketHandler.js';
+
 
 export const getChats = async (req, res) => {
   try {
@@ -106,6 +108,17 @@ export const sendMessage = async (req, res) => {
     chat.lastMessage = message._id;
     chat.updatedAt = new Date();
     await chat.save();
+
+    // Emit socket event for real-time delivery
+    try {
+      const io = getIO();
+      if (io) {
+        io.to(`user:${receiverId}`).emit('receive-message', message);
+        io.to(`user:${senderId}`).emit('receive-message', message);
+      }
+    } catch (socketErr) {
+      console.error('Failed to emit chat message socket event:', socketErr);
+    }
 
     res.status(201).json({ success: true, data: message, message: 'Message sent successfully', requestId: req.requestId });
   } catch (err) {

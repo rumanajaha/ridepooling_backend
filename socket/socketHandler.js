@@ -52,14 +52,19 @@ export function initializeSocket(server) {
     logger.info('Socket user connected', { userId: socket.userId, socketId: socket.id });
     socket.join(`user:${socket.userId}`);
 
-    const expiryCheckInterval = setInterval(() => {
-      if (!socket.tokenExpAt) return;
-
-      if (Date.now() >= socket.tokenExpAt) {
+    let expiryTimeout = null;
+    if (socket.tokenExpAt) {
+      const timeRemaining = socket.tokenExpAt - Date.now();
+      if (timeRemaining <= 0) {
         socket.emit('auth-expired', { message: 'Session expired. Please login again.' });
         socket.disconnect(true);
+      } else {
+        expiryTimeout = setTimeout(() => {
+          socket.emit('auth-expired', { message: 'Session expired. Please login again.' });
+          socket.disconnect(true);
+        }, timeRemaining);
       }
-    }, 60 * 1000);
+    }
 
     // User joins a specific ride room
     socket.on('join-ride', async ({ rideId, role }) => {
@@ -350,6 +355,22 @@ export function initializeSocket(server) {
       }
     });
 
+    // Chat typing indicators
+    socket.on('chat-typing', ({ chatId, receiverId }) => {
+      io.to(`user:${receiverId}`).emit('user-typing', {
+        chatId,
+        userId: socket.userId,
+        userName: socket.userName
+      });
+    });
+
+    socket.on('chat-stop-typing', ({ chatId, receiverId }) => {
+      io.to(`user:${receiverId}`).emit('user-stop-typing', {
+        chatId,
+        userId: socket.userId
+      });
+    });
+
     // Ride status updates
     socket.on('ride-started', async (data) => {
       const userInfo = connectedUsers.get(socket.id);
@@ -382,7 +403,9 @@ export function initializeSocket(server) {
 
     // Disconnect
     socket.on('disconnect', () => {
-      clearInterval(expiryCheckInterval);
+      if (expiryTimeout) {
+        clearTimeout(expiryTimeout);
+      }
 
       const userInfo = connectedUsers.get(socket.id);
       

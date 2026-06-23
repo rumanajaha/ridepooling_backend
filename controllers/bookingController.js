@@ -174,45 +174,62 @@ export const getMyBookingsAsDriver = async (req, res) => {
 
 // Cancel booking by passenger
 export const cancelBooking = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
+    session.startTransaction();
     const rideId = req.params.id;
     const userId = new ObjectId(req.userId);
     
-    const ride = await Ride.findById(rideId);
+    const ride = await Ride.findById(rideId).session(session);
 
     if (!ride) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'Ride not found' });
     }
 
     const passengerIndex = ride.passengers.findIndex((p) => p.userId.toString() === userId.toString());
     if (passengerIndex === -1) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'Booking not found for this user' });
     }
 
     const passenger = ride.passengers[passengerIndex];
     ride.seatsBooked = Math.max(0, ride.seatsBooked - (passenger.bookedSeats || 0));
     ride.passengers.splice(passengerIndex, 1);
-    await ride.save();
+    await ride.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({ success: true, message: 'Booking cancelled', requestId: req.requestId });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     return res.status(500).json({ success: false, message: 'Failed to cancel booking', requestId: req.requestId });
   }
 };
 
 // Accept booking by driver
 export const acceptBooking = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
+    session.startTransaction();
     const { rideId, passengerId } = req.params;
     const driverId = new ObjectId(req.userId);
     
-    const ride = await Ride.findById(rideId).populate('passengers.userId', 'name email phone');
+    const ride = await Ride.findById(rideId).populate('passengers.userId', 'name email phone').session(session);
 
     if (!ride) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'Ride not found' });
     }
 
     if (ride.driver.toString() !== driverId.toString()) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(403).json({ success: false, message: 'Only the driver can accept bookings' });
     }
 
@@ -222,10 +239,14 @@ export const acceptBooking = async (req, res) => {
     });
 
     if (passengerIndex === -1) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'Passenger not found in this ride' });
     }
 
     if (ride.passengers[passengerIndex].status === 'accepted') {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: 'Booking already accepted' });
     }
 
@@ -239,7 +260,10 @@ export const acceptBooking = async (req, res) => {
     ride.pickupCodeExpiry = new Date(Date.now() + 30 * 60 * 1000); // 30 min expiry
     ride.pickupVerified = false;
     
-    await ride.save();
+    await ride.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       success: true,
@@ -251,29 +275,39 @@ export const acceptBooking = async (req, res) => {
       },
     });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     return res.status(500).json({ success: false, message: 'Failed to accept booking', requestId: req.requestId });
   }
 };
 
 // Reject booking by driver
 export const rejectBooking = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
+    session.startTransaction();
     const { rideId, passengerId } = req.params;
     const driverId = new ObjectId(req.userId);
     
-    const ride = await Ride.findById(rideId);
+    const ride = await Ride.findById(rideId).session(session);
 
     if (!ride) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'Ride not found' });
     }
 
     if (ride.driver.toString() !== driverId.toString()) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(403).json({ success: false, message: 'Only the driver can reject bookings' });
     }
 
     const passengerIndex = ride.passengers.findIndex((p) => p.userId?.toString() === passengerId);
 
     if (passengerIndex === -1) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'Passenger not found in this ride' });
     }
 
@@ -281,7 +315,10 @@ export const rejectBooking = async (req, res) => {
     ride.seatsBooked = Math.max(0, ride.seatsBooked - (passenger.bookedSeats || 0));
     ride.passengers.splice(passengerIndex, 1);
     
-    await ride.save();
+    await ride.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       success: true,
@@ -289,41 +326,57 @@ export const rejectBooking = async (req, res) => {
       requestId: req.requestId,
     });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     return res.status(500).json({ success: false, message: 'Failed to reject booking', requestId: req.requestId });
   }
 };
 
 // Verify pickup code
 export const verifyPickupCode = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
+    session.startTransaction();
     const rideId = req.params.id;
     const { code } = req.body;
     const driverId = new ObjectId(req.userId);
     
     if (!code) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: 'Ride code is required' });
     }
 
-    const ride = await Ride.findById(rideId);
+    const ride = await Ride.findById(rideId).session(session);
 
     if (!ride) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'Ride not found' });
     }
 
     if (ride.driver.toString() !== driverId.toString()) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(403).json({ success: false, message: 'Only the driver can verify pickup' });
     }
 
     if (ride.pickupVerified) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: 'Pickup already verified' });
     }
 
     if (!ride.pickupCodeHash) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: 'No pickup code set for this ride' });
     }
 
     // Check expiry
     if (ride.pickupCodeExpiry && new Date() > ride.pickupCodeExpiry) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: 'Ride code has expired' });
     }
 
@@ -331,10 +384,14 @@ export const verifyPickupCode = async (req, res) => {
     const isValid = await bcrypt.compare(code.trim(), ride.pickupCodeHash);
 
     if (!isValid) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: 'Invalid ride code' });
     }
 
     if (!canTransitionRideStatus(ride.rideStatus, 'in_progress')) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: `Cannot start ride from status '${ride.rideStatus}'` });
     }
 
@@ -344,7 +401,10 @@ export const verifyPickupCode = async (req, res) => {
     ride.pickupCodeHash = null; // Invalidate after use
     ride.pickupCodeEncrypted = null;
     
-    await ride.save();
+    await ride.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       success: true,
@@ -356,27 +416,37 @@ export const verifyPickupCode = async (req, res) => {
       },
     });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     return res.status(500).json({ success: false, message: 'Failed to verify pickup code', requestId: req.requestId });
   }
 };
 
 // Mark ride as completed by driver
 export const markCompletedByDriver = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
+    session.startTransaction();
     const rideId = req.params.id;
     const userId = new ObjectId(req.userId);
     
-    const ride = await Ride.findById(rideId);
+    const ride = await Ride.findById(rideId).session(session);
 
     if (!ride) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'Ride not found' });
     }
 
     if (ride.driver.toString() !== userId.toString()) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(403).json({ success: false, message: 'Only the driver can mark the ride as completed' });
     }
 
     if (!['in_progress', 'payment_pending'].includes(ride.rideStatus)) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: `Cannot complete ride from status '${ride.rideStatus}'` });
     }
 
@@ -389,12 +459,17 @@ export const markCompletedByDriver = async (req, res) => {
     if (allPassengersCompleted && ride.passengers.length > 0) {
       // Both driver and all passengers are done → trigger payment
       if (!canTransitionRideStatus(ride.rideStatus, 'payment_pending')) {
+        await session.abortTransaction();
+        session.endSession();
         return res.status(400).json({ success: false, message: `Cannot transition ride to payment pending from '${ride.rideStatus}'` });
       }
       ride.rideStatus = 'payment_pending';
     }
     
-    await ride.save();
+    await ride.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({ 
       success: true, 
@@ -409,32 +484,44 @@ export const markCompletedByDriver = async (req, res) => {
       }
     });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     return res.status(500).json({ success: false, message: 'Failed to mark driver completion', requestId: req.requestId });
   }
 };
 
 // Force-complete ride by driver after passenger timeout
 export const forceCompleteByDriver = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
+    session.startTransaction();
     const rideId = req.params.id;
     const userId = new ObjectId(req.userId);
     const timeoutMinutes = Number(process.env.PASSENGER_COMPLETE_TIMEOUT_MINUTES || 30);
 
-    const ride = await Ride.findById(rideId);
+    const ride = await Ride.findById(rideId).session(session);
 
     if (!ride) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'Ride not found' });
     }
 
     if (ride.driver.toString() !== userId.toString()) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(403).json({ success: false, message: 'Only the driver can force-complete the ride' });
     }
 
     if (ride.rideStatus !== 'in_progress') {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: `Force complete is only allowed from status 'in_progress'` });
     }
 
     if (!ride.completedByDriver || !ride.driverCompletedAt) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({
         success: false,
         message: 'Driver must mark ride complete first before force-completing',
@@ -445,6 +532,8 @@ export const forceCompleteByDriver = async (req, res) => {
     const requiredMs = timeoutMinutes * 60 * 1000;
 
     if (elapsedMs < requiredMs) {
+      await session.abortTransaction();
+      session.endSession();
       const minutesLeft = Math.ceil((requiredMs - elapsedMs) / (60 * 1000));
       return res.status(400).json({
         success: false,
@@ -462,11 +551,16 @@ export const forceCompleteByDriver = async (req, res) => {
     });
 
     if (!canTransitionRideStatus(ride.rideStatus, 'payment_pending')) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: `Cannot transition ride to payment pending from '${ride.rideStatus}'` });
     }
 
     ride.rideStatus = 'payment_pending';
-    await ride.save();
+    await ride.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({
       success: true,
@@ -478,28 +572,38 @@ export const forceCompleteByDriver = async (req, res) => {
       },
     });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     return res.status(500).json({ success: false, message: 'Failed to force-complete ride', requestId: req.requestId });
   }
 };
 
 // Mark ride as completed by passenger
 export const markCompletedByPassenger = async (req, res) => {
+  const session = await mongoose.startSession();
   try {
+    session.startTransaction();
     const rideId = req.params.id;
     const userId = new ObjectId(req.userId);
     
-    const ride = await Ride.findById(rideId);
+    const ride = await Ride.findById(rideId).session(session);
 
     if (!ride) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'Ride not found' });
     }
 
     const passengerIndex = ride.passengers.findIndex((p) => p.userId.toString() === userId.toString());
     if (passengerIndex === -1) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ success: false, message: 'Booking not found for this user' });
     }
 
     if (!['in_progress', 'payment_pending'].includes(ride.rideStatus)) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ success: false, message: `Cannot complete ride from status '${ride.rideStatus}'` });
     }
 
@@ -512,12 +616,17 @@ export const markCompletedByPassenger = async (req, res) => {
     if (ride.completedByDriver && allPassengersCompleted) {
       // Both driver and all passengers are done → trigger payment
       if (!canTransitionRideStatus(ride.rideStatus, 'payment_pending')) {
+        await session.abortTransaction();
+        session.endSession();
         return res.status(400).json({ success: false, message: `Cannot transition ride to payment pending from '${ride.rideStatus}'` });
       }
       ride.rideStatus = 'payment_pending';
     }
     
-    await ride.save();
+    await ride.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
 
     return res.status(200).json({ 
       success: true, 
@@ -532,6 +641,8 @@ export const markCompletedByPassenger = async (req, res) => {
       }
     });
   } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
     return res.status(500).json({ success: false, message: 'Failed to mark passenger completion', requestId: req.requestId });
   }
 };

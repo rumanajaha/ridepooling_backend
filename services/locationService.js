@@ -11,6 +11,36 @@ class LocationService {
       locationHistory: new Map(),
       chatMessages: new Map(),
     };
+
+    // Periodic garbage collection for expired fallback cache entries.
+    // Prevents memory leaks if entries are never read back or cleared manually.
+    if (typeof setInterval !== 'undefined') {
+      this.gcInterval = setInterval(() => {
+        this.runFallbackGC();
+      }, 300000); // Clean up every 5 minutes
+      if (this.gcInterval && typeof this.gcInterval.unref === 'function') {
+        this.gcInterval.unref();
+      }
+    }
+  }
+
+  runFallbackGC() {
+    const now = Date.now();
+    let cleanedCount = 0;
+
+    for (const storeName of Object.keys(this.fallback)) {
+      const store = this.fallback[storeName];
+      for (const [key, entry] of store.entries()) {
+        if (entry && entry.expiresAt <= now) {
+          store.delete(key);
+          cleanedCount++;
+        }
+      }
+    }
+
+    if (cleanedCount > 0) {
+      logger.info('Fallback in-memory cache GC completed', { cleanedCount });
+    }
   }
 
   setFallbackWithTTL(store, key, value, ttlSeconds) {
@@ -271,6 +301,10 @@ class LocationService {
   }
 
   async disconnect() {
+    if (this.gcInterval) {
+      clearInterval(this.gcInterval);
+      this.gcInterval = null;
+    }
     if (this.client && this.isConnected) {
       await this.client.quit();
       this.isConnected = false;

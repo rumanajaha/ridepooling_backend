@@ -249,7 +249,7 @@ export const cashfreeWebhook = async (req, res) => {
 
     if (!orderId) return res.status(400).send('Missing order_id');
 
-    const payment = await Payment.findOne({ orderId });
+    let payment = await Payment.findOne({ orderId });
     if (!payment) return res.status(404).send('Payment not found');
 
     // Validate amount
@@ -262,60 +262,70 @@ export const cashfreeWebhook = async (req, res) => {
     }
 
     if (orderStatus === 'PAID' || orderStatus === 'SUCCESS' || event?.type === 'PAYMENT_SUCCESS') {
-      if (payment.status !== 'completed') {
-        const session = await mongoose.startSession();
-        try {
-          session.startTransaction();
+      const session = await mongoose.startSession();
+      try {
+        session.startTransaction();
 
-          payment.status = 'completed';
-          payment.completedAt = new Date();
-          await payment.save({ session });
+        const dbPayment = await Payment.findOne({ orderId }).session(session);
+        if (!dbPayment) throw new Error('PAYMENT_NOT_FOUND');
 
-          const ride = await Ride.findById(payment.ride).session(session);
-          if (!ride) throw new Error('Ride not found while processing payment webhook');
+        if (dbPayment.status === 'completed') {
+          logger.info('Payment already completed, skipping webhook processing', { orderId });
+          await session.commitTransaction();
+          session.endSession();
+          return res.status(200).send('OK');
+        }
 
-          const pIdx = ride.passengers.findIndex((p) => p.userId.toString() === payment.passenger.toString());
-          if (pIdx !== -1) {
-            ride.passengers[pIdx].paymentStatus = 'paid';
-            ride.passengers[pIdx].paymentAmount = payment.amount;
+        dbPayment.status = 'completed';
+        dbPayment.completedAt = new Date();
+        await dbPayment.save({ session });
+        payment = dbPayment;
+
+        const ride = await Ride.findById(payment.ride).session(session);
+        if (!ride) throw new Error('Ride not found while processing payment webhook');
+
+        const pIdx = ride.passengers.findIndex((p) => p.userId.toString() === payment.passenger.toString());
+        if (pIdx !== -1) {
+          ride.passengers[pIdx].paymentStatus = 'paid';
+          ride.passengers[pIdx].paymentAmount = payment.amount;
+        }
+
+        const allPaid = ride.passengers.every((p) => p.paymentStatus === 'paid');
+        if (allPaid) {
+          if (!canTransitionRideStatus(ride.rideStatus, 'completed')) {
+            throw new Error(`Invalid ride status transition from '${ride.rideStatus}' to 'completed'`);
           }
+          ride.rideStatus = 'completed';
+        }
+        await ride.save({ session });
 
-          const allPaid = ride.passengers.every((p) => p.paymentStatus === 'paid');
-          if (allPaid) {
-            if (!canTransitionRideStatus(ride.rideStatus, 'completed')) {
-              throw new Error(`Invalid ride status transition from '${ride.rideStatus}' to 'completed'`);
-            }
-            ride.rideStatus = 'completed';
-          }
-          await ride.save({ session });
-
-          await Wallet.findOneAndUpdate(
-            { userId: payment.driver },
-            {
-              $setOnInsert: { userId: payment.driver, balance: 0 },
-              $inc: { balance: payment.amount },
-              $push: {
-                transactions: {
-                  type: 'credit',
-                  amount: payment.amount,
-                  description: 'Ride earnings (UPI via Cashfree)',
-                  rideId: payment.ride,
-                  relatedUserId: payment.passenger,
-                  status: 'completed',
-                  transactionDate: new Date(),
-                },
+        await Wallet.findOneAndUpdate(
+          { userId: payment.driver },
+          {
+            $setOnInsert: { userId: payment.driver, balance: 0 },
+            $inc: { balance: payment.amount },
+            $push: {
+              transactions: {
+                type: 'credit',
+                amount: payment.amount,
+                description: 'Ride earnings (UPI via Cashfree)',
+                rideId: payment.ride,
+                relatedUserId: payment.passenger,
+                status: 'completed',
+                transactionDate: new Date(),
               },
             },
-            { upsert: true, session }
-          );
+          },
+          { upsert: true, session }
+        );
 
-          await session.commitTransaction();
-        } catch (txErr) {
-          await session.abortTransaction();
-          throw txErr;
-        } finally {
-          session.endSession();
-        }
+        await session.commitTransaction();
+      } catch (txErr) {
+        await session.abortTransaction();
+        throw txErr;
+      } finally {
+        session.endSession();
+      }
 
         // Emit socket event to ride room (driver + passenger listeners)
         try {
@@ -347,9 +357,7 @@ export const cashfreeWebhook = async (req, res) => {
           });
         }
       }
-
       return res.status(200).send('OK');
-    }
 
     if (orderStatus === 'FAILED' || event?.type === 'PAYMENT_FAILED') {
       payment.status = 'failed';
@@ -469,19 +477,30 @@ export const confirmPayment = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Manual confirmation is disabled. Use payment gateway verification.' });
     }
 
-    if (payment.status === 'completed') {
-      return res.status(400).json({ success: false, message: 'Payment already completed' });
-    }
-
     const session = await mongoose.startSession();
     let ride;
     try {
       session.startTransaction();
 
-      payment.status = 'completed';
-      payment.transactionId = transactionId;
-      payment.completedAt = new Date();
-      await payment.save({ session });
+      // Fetch payment inside the session to prevent race conditions
+      const dbPayment = await Payment.findById(paymentId).session(session);
+      if (!dbPayment) {
+        throw new Error('PAYMENT_NOT_FOUND');
+      }
+
+      if (dbPayment.status === 'completed') {
+        throw new Error('PAYMENT_ALREADY_COMPLETED');
+      }
+
+      dbPayment.status = 'completed';
+      dbPayment.transactionId = transactionId;
+      dbPayment.completedAt = new Date();
+      await dbPayment.save({ session });
+
+      // Copy values back to outer reference for subsequent code/response
+      payment.status = dbPayment.status;
+      payment.transactionId = dbPayment.transactionId;
+      payment.completedAt = dbPayment.completedAt;
 
       ride = await Ride.findById(payment.ride).session(session);
       if (!ride) {
@@ -599,6 +618,12 @@ export const confirmPayment = async (req, res) => {
     });
   } catch (err) {
     logger.error('Failed to confirm payment', { requestId: req.requestId, userId: req.userId, error: err.message });
+    if (err.message === 'PAYMENT_ALREADY_COMPLETED') {
+      return res.status(400).json({ success: false, message: 'Payment already completed', requestId: req.requestId });
+    }
+    if (err.message === 'PAYMENT_NOT_FOUND') {
+      return res.status(404).json({ success: false, message: 'Payment not found', requestId: req.requestId });
+    }
     res.status(500).json({ success: false, message: 'Failed to confirm payment', requestId: req.requestId });
   }
 };

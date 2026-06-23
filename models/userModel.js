@@ -40,21 +40,6 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
-    kycStatus: {
-      type: String,
-      enum: ['pending', 'verified', 'rejected'],
-      default: 'pending',
-    },
-    kycRejectionReason: {
-      type: String,
-      default: '',
-    },
-    kycDocuments: {
-      licensePhoto: String,
-      idPhoto: String,
-      vehiclePhoto: String,
-      platePhoto: String,
-    },
     upiId: {
       type: String,
       default: null,
@@ -97,8 +82,14 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    passwordChangedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );
+
+userSchema.index({ city: 1 });
 
 export default mongoose.model('User', userSchema);

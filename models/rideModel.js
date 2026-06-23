@@ -20,6 +20,17 @@ const rideSchema = new mongoose.Schema(
         type: Number,
         required: true,
       },
+      coordinates: {
+        type: {
+          type: String,
+          enum: ['Point'],
+          default: 'Point',
+        },
+        coordinates: {
+          type: [Number], // [longitude, latitude]
+          default: [0, 0],
+        },
+      },
     },
     endLocation: {
       address: {
@@ -33,6 +44,17 @@ const rideSchema = new mongoose.Schema(
       longitude: {
         type: Number,
         required: true,
+      },
+      coordinates: {
+        type: {
+          type: String,
+          enum: ['Point'],
+          default: 'Point',
+        },
+        coordinates: {
+          type: [Number], // [longitude, latitude]
+          default: [0, 0],
+        },
       },
     },
     departureTime: {
@@ -166,5 +188,9 @@ const rideSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+rideSchema.index({ 'startLocation.coordinates': '2dsphere' });
+rideSchema.index({ 'endLocation.coordinates': '2dsphere' });
+rideSchema.index({ rideStatus: 1, departureTime: 1 });
 
 export default mongoose.model('Ride', rideSchema);
