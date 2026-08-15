@@ -18,6 +18,7 @@ const sanitizeUser = (userDoc) => {
     upiId: user.upiId || null,
     vehicles: user.vehicles || [],
     trustedContacts: user.trustedContacts || [],
+    unfoggedHexes: user.unfoggedHexes || [],
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
   };

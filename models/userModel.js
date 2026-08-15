@@ -86,6 +86,11 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    unfoggedHexes: {
+      type: [String],
+      default: [],
+      index: true,
+    },
   },
   { timestamps: true }
 );

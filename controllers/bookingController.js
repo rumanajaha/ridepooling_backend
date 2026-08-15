@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import { generateRideCode } from '../utils/codeGenerator.js';
 import { encryptCode, decryptCode } from '../utils/secureCode.js';
 import { canTransitionRideStatus } from '../utils/rideStateMachine.js';
+import { processRideCompletion } from '../services/fogOfWarService.js';
 
 const { ObjectId } = mongoose.Types;
 
@@ -97,7 +98,7 @@ export const getMyBookings = async (req, res) => {
     const userId = new ObjectId(req.userId);
     
     const rides = await Ride.find({ 'passengers.userId': userId })
-      .populate('driver', 'name email phone city rating profileImage')
+      .populate('driver', 'name email phone city rating profileImage vehicles')
       .populate('passengers.userId', 'name email phone city rating profileImage')
       .sort({ departureTime: -1 });
 
@@ -196,6 +197,17 @@ export const cancelBooking = async (req, res) => {
     }
 
     const passenger = ride.passengers[passengerIndex];
+    if (ride.rideStatus !== 'active') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: 'Cannot cancel booking on a ride that has already departed or completed' });
+    }
+    if (passenger.status === 'completed' || passenger.completedByPassenger) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: 'Cannot cancel a completed booking' });
+    }
+
     ride.seatsBooked = Math.max(0, ride.seatsBooked - (passenger.bookedSeats || 0));
     ride.passengers.splice(passengerIndex, 1);
     await ride.save({ session });
@@ -312,6 +324,17 @@ export const rejectBooking = async (req, res) => {
     }
 
     const passenger = ride.passengers[passengerIndex];
+    if (ride.rideStatus !== 'active') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: 'Cannot reject booking on a ride that has already departed or completed' });
+    }
+    if (passenger.status === 'completed' || passenger.completedByPassenger) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ success: false, message: 'Cannot reject a completed booking' });
+    }
+
     ride.seatsBooked = Math.max(0, ride.seatsBooked - (passenger.bookedSeats || 0));
     ride.passengers.splice(passengerIndex, 1);
     
@@ -457,13 +480,13 @@ export const markCompletedByDriver = async (req, res) => {
     const allPassengersCompleted = ride.passengers.every(p => p.completedByPassenger === true);
     
     if (allPassengersCompleted && ride.passengers.length > 0) {
-      // Both driver and all passengers are done → trigger payment
       if (!canTransitionRideStatus(ride.rideStatus, 'payment_pending')) {
         await session.abortTransaction();
         session.endSession();
         return res.status(400).json({ success: false, message: `Cannot transition ride to payment pending from '${ride.rideStatus}'` });
       }
       ride.rideStatus = 'payment_pending';
+      await processRideCompletion(ride, session);
     }
     
     await ride.save({ session });
@@ -557,6 +580,7 @@ export const forceCompleteByDriver = async (req, res) => {
     }
 
     ride.rideStatus = 'payment_pending';
+    await processRideCompletion(ride, session);
     await ride.save({ session });
 
     await session.commitTransaction();
@@ -621,6 +645,7 @@ export const markCompletedByPassenger = async (req, res) => {
         return res.status(400).json({ success: false, message: `Cannot transition ride to payment pending from '${ride.rideStatus}'` });
       }
       ride.rideStatus = 'payment_pending';
+      await processRideCompletion(ride, session);
     }
     
     await ride.save({ session });
